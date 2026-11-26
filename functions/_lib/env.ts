@@ -1,8 +1,20 @@
 export interface Env {
-  NOTION_TOKEN: string
-  NOTION_ROOT_PAGE_ID: string
-  APP_PASSWORD: string
+  NOTION_TOKEN?: string
+  NOTION_ROOT_PAGE_ID?: string
+  APP_PASSWORD?: string
   PAGE_CACHE?: KVNamespace
+  NOTION_OAUTH_CLIENT_ID?: string
+  NOTION_OAUTH_CLIENT_SECRET?: string
+  NOTION_OAUTH_REDIRECT_URI?: string
+  SESSION_SECRET?: string
+}
+
+export function oauthEnabled(env: Env): boolean {
+  return Boolean(env.NOTION_OAUTH_CLIENT_ID && env.NOTION_OAUTH_CLIENT_SECRET && env.SESSION_SECRET)
+}
+
+export function passwordFallbackEnabled(env: Env): boolean {
+  return Boolean(env.NOTION_TOKEN && env.APP_PASSWORD)
 }
 
 export function json(data: unknown, status = 200, headers?: HeadersInit): Response {
@@ -12,8 +24,11 @@ export function json(data: unknown, status = 200, headers?: HeadersInit): Respon
   return new Response(JSON.stringify(data), { status, headers: h })
 }
 
-export function text(body: string, status = 200, headers?: HeadersInit): Response {
-  return new Response(body, { status, headers })
+export function attachCookies(res: Response, cookies?: string[]): Response {
+  if (!cookies?.length) return res
+  const headers = new Headers(res.headers)
+  for (const cookie of cookies) headers.append('Set-Cookie', cookie)
+  return new Response(res.body, { status: res.status, headers })
 }
 
 export function requireToken(env: Env): string {

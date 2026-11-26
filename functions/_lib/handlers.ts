@@ -3,11 +3,11 @@ import { toUuid, notionPageUrl } from '../../shared/ids'
 import type { OfficialRichText, SearchPage } from '../../shared/types'
 import { isEditableOfficialType } from '../../shared/types'
 import {
+  attachCookies,
   errorResponse,
   HttpError,
   json,
-  requireRootPageId,
-  requireToken,
+  oauthEnabled,
   type Env
 } from './env'
 import {
@@ -26,6 +26,7 @@ import {
   type OfficialBlock,
   type OfficialPage
 } from './notion'
+import { refreshIfNeeded, resolveAccessToken, type AccessResolution } from './auth'
 
 export interface PagesContext {
   request: Request
@@ -34,14 +35,35 @@ export interface PagesContext {
   waitUntil?: (p: Promise<unknown>) => void
 }
 
-export async function handleGetPage(ctx: PagesContext): Promise<Response> {
+
+async function withNotion(
+  ctx: PagesContext,
+  fn: (client: NotionClient, access: AccessResolution) => Promise<Response>
+): Promise<Response> {
   try {
-    const rawId = ctx.params.id || ''
-    const pageId = toUuid(decodeURIComponent(rawId))
-    if (!pageId) return json({ error: '无效的页面 ID' }, 400)
-    const client = createNotionClient(requireToken(ctx.env))
+    let access = await resolveAccessToken(ctx.request, ctx.env)
+    try {
+      const res = await fn(createNotionClient(access.token), access)
+      return attachCookies(res, access.cookies)
+    } catch (err) {
+      if (!(err instanceof HttpError) || err.status !== 401) throw err
+      const refreshed = await refreshIfNeeded(ctx.env, ctx.request, access)
+      if (!refreshed) throw err
+      const res = await fn(createNotionClient(refreshed.token), refreshed)
+      return attachCookies(res, refreshed.cookies)
+    }
+  } catch (err) {
+    return errorResponse(err)
+  }
+}
+
+export async function handleGetPage(ctx: PagesContext): Promise<Response> {
+  const rawId = ctx.params.id || ''
+  const pageId = toUuid(decodeURIComponent(rawId))
+  if (!pageId) return json({ error: '无效的页面 ID' }, 400)
+  return withNotion(ctx, async (client, access) => {
     const cache = createCache(ctx.env, await openCacheApi())
-    const key = pageCacheKey(pageId)
+    const key = pageCacheKey(pageId, access.tenant)
     const hit = await cache.get(key)
     if (hit) {
       return new Response(hit, {
@@ -66,23 +88,47 @@ export async function handleGetPage(ctx: PagesContext): Promise<Response> {
         'cache-control': 'no-store'
       }
     })
-  } catch (err) {
-    return errorResponse(err)
-  }
+  })
 }
 
 export async function handleSearch(ctx: PagesContext): Promise<Response> {
-  try {
-    const url = new URL(ctx.request.url)
-    const q = (url.searchParams.get('q') || '').trim()
-    const client = createNotionClient(requireToken(ctx.env))
-    const root = toUuid(requireRootPageId(ctx.env))
-    if (!root) return json({ error: 'NOTION_ROOT_PAGE_ID 无效' }, 500)
-    const pages = await listPagesUnderRoot(client, root, q)
+  const url = new URL(ctx.request.url)
+  const q = (url.searchParams.get('q') || '').trim()
+  const root = toUuid(ctx.env.NOTION_ROOT_PAGE_ID || '')
+  return withNotion(ctx, async (client) => {
+    const useSearch = oauthEnabled(ctx.env) || !root
+    const pages = useSearch
+      ? await listPagesBySearch(client, q)
+      : await listPagesUnderRoot(client, root!, q)
     return json({ pages, rootPageId: root })
-  } catch (err) {
-    return errorResponse(err)
-  }
+  })
+}
+
+async function listPagesBySearch(client: NotionClient, query: string): Promise<SearchPage[]> {
+  const pages: SearchPage[] = []
+  const seen = new Set<string>()
+  let cursor: string | undefined
+  let guard = 0
+  do {
+    const res = await client.search({
+      query: query || undefined,
+      filter: { property: 'object', value: 'page' },
+      start_cursor: cursor,
+      page_size: 50
+    })
+    for (const page of res.results as OfficialPage[]) {
+      if (seen.has(page.id)) continue
+      seen.add(page.id)
+      pages.push({
+        id: page.id,
+        title: pageTitle(page),
+        parentId: parentIdOf(page.parent)
+      })
+    }
+    cursor = res.next_cursor ?? undefined
+    guard += 1
+  } while (cursor && pages.length < 200 && guard < 8)
+  return pages
 }
 
 const WALK_MAX = 200
@@ -161,16 +207,15 @@ async function listPagesUnderRoot(
 }
 
 export async function handlePatchBlock(ctx: PagesContext): Promise<Response> {
-  try {
-    const blockId = toUuid(decodeURIComponent(ctx.params.id || ''))
-    if (!blockId) return json({ error: '无效的块 ID' }, 400)
-    const body = (await ctx.request.json()) as {
-      richText?: OfficialRichText[]
-      checked?: boolean
-      lastEditedTime?: string
-      pageId?: string
-    }
-    const client = createNotionClient(requireToken(ctx.env))
+  const blockId = toUuid(decodeURIComponent(ctx.params.id || ''))
+  if (!blockId) return json({ error: '无效的块 ID' }, 400)
+  const body = (await ctx.request.json()) as {
+    richText?: OfficialRichText[]
+    checked?: boolean
+    lastEditedTime?: string
+    pageId?: string
+  }
+  return withNotion(ctx, async (client, access) => {
     const current = await client.blocks.retrieve({ block_id: blockId })
     if (body.lastEditedTime && current.last_edited_time && body.lastEditedTime !== current.last_edited_time) {
       return json(
@@ -200,39 +245,33 @@ export async function handlePatchBlock(ctx: PagesContext): Promise<Response> {
     }
     patch[type] = fields
     const updated = await client.blocks.update({ block_id: blockId, ...patch })
-    await invalidateByPage(ctx, client, body.pageId, current)
+    await invalidateByPage(ctx, client, body.pageId, current, access.tenant)
     return json({ block: updated })
-  } catch (err) {
-    return errorResponse(err)
-  }
+  })
 }
 
 export async function handleDeleteBlock(ctx: PagesContext): Promise<Response> {
-  try {
-    const blockId = toUuid(decodeURIComponent(ctx.params.id || ''))
-    if (!blockId) return json({ error: '无效的块 ID' }, 400)
-    const url = new URL(ctx.request.url)
-    const pageId = url.searchParams.get('pageId')
-    const client = createNotionClient(requireToken(ctx.env))
+  const blockId = toUuid(decodeURIComponent(ctx.params.id || ''))
+  if (!blockId) return json({ error: '无效的块 ID' }, 400)
+  const url = new URL(ctx.request.url)
+  const pageId = url.searchParams.get('pageId')
+  return withNotion(ctx, async (client, access) => {
     const current = await client.blocks.retrieve({ block_id: blockId })
     const deleted = await client.blocks.delete({ block_id: blockId })
-    await invalidateByPage(ctx, client, pageId, current)
+    await invalidateByPage(ctx, client, pageId, current, access.tenant)
     return json({ block: deleted })
-  } catch (err) {
-    return errorResponse(err)
-  }
+  })
 }
 
 export async function handleAppendChild(ctx: PagesContext): Promise<Response> {
-  try {
-    const afterId = toUuid(decodeURIComponent(ctx.params.id || ''))
-    if (!afterId) return json({ error: '无效的块 ID' }, 400)
-    const body = (await ctx.request.json().catch(() => ({}))) as {
-      pageId?: string
-      asChild?: boolean
-      richText?: OfficialRichText[]
-    }
-    const client = createNotionClient(requireToken(ctx.env))
+  const afterId = toUuid(decodeURIComponent(ctx.params.id || ''))
+  if (!afterId) return json({ error: '无效的块 ID' }, 400)
+  const body = (await ctx.request.json().catch(() => ({}))) as {
+    pageId?: string
+    asChild?: boolean
+    richText?: OfficialRichText[]
+  }
+  return withNotion(ctx, async (client, access) => {
     const current = await client.blocks.retrieve({ block_id: afterId })
     const rich_text = splitRichTextItems(body.richText ?? [])
     const children = [
@@ -258,11 +297,9 @@ export async function handleAppendChild(ctx: PagesContext): Promise<Response> {
       children,
       after
     })
-    await invalidateByPage(ctx, client, body.pageId, current)
+    await invalidateByPage(ctx, client, body.pageId, current, access.tenant)
     return json({ results: appended.results, parentId })
-  } catch (err) {
-    return errorResponse(err)
-  }
+  })
 }
 
 export async function handleImageProxy(ctx: PagesContext): Promise<Response> {
@@ -336,7 +373,8 @@ async function invalidateByPage(
   ctx: PagesContext,
   client: NotionClient,
   pageId: string | null | undefined,
-  block: OfficialBlock
+  block: OfficialBlock,
+  tenant = 'internal'
 ) {
   const cache = createCache(ctx.env, await openCacheApi())
   const ids = new Set<string>()
@@ -358,6 +396,6 @@ async function invalidateByPage(
     }
   }
   for (const id of ids) {
-    await invalidatePage(cache, id)
+    await invalidatePage(cache, id, tenant)
   }
 }

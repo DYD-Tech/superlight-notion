@@ -9,8 +9,14 @@ export interface PagePayload {
 
 export interface MeResponse {
   ok: boolean
-  rootPageId: string | null
-  hasToken: boolean
+  mode?: 'oauth' | 'password'
+  workspaceName?: string | null
+  workspaceId?: string | null
+  botId?: string | null
+  rootPageId?: string | null
+  hasToken?: boolean
+  oauthEnabled: boolean
+  passwordEnabled: boolean
 }
 
 async function parseJson<T>(res: Response): Promise<T> {
@@ -47,7 +53,7 @@ export const api = {
 
   search: (q = '') =>
     fetch(`/api/search?q=${encodeURIComponent(q)}`).then((r) =>
-      parseJson<{ pages: SearchPage[]; rootPageId: string }>(r)
+      parseJson<{ pages: SearchPage[]; rootPageId: string | null }>(r)
     ),
 
   page: (id: string) =>

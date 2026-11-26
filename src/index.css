@@ -137,6 +137,16 @@ a { color: var(--accent); }
   z-index: 5;
 }
 
+.topbar-titles {
+  min-width: 0;
+}
+.workspace-name {
+  font-size: 12px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .topbar-title {
   font-weight: 650;
   overflow: hidden;
@@ -247,6 +257,31 @@ a { color: var(--accent); }
   cursor: pointer;
 }
 .login-card button:disabled { opacity: 0.6; cursor: not-allowed; }
+.login-card form { display: flex; flex-direction: column; gap: 12px; }
+.oauth-button {
+  display: block;
+  text-align: center;
+  text-decoration: none;
+  background: var(--accent);
+  color: #fff;
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-weight: 600;
+}
+.login-or {
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+}
+.reauth-link {
+  margin: auto 12px 16px;
+  display: block;
+  text-align: center;
+  font-size: 13px;
+  color: var(--accent);
+  text-decoration: none;
+  padding: 8px;
+}
 
 .progress-bar {
   position: sticky;

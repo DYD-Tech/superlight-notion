@@ -7,7 +7,8 @@ export function Sidebar({
   onQuery,
   onSelect,
   open,
-  onToggle
+  onToggle,
+  showReauth
 }: {
   pages: SearchPage[]
   currentId: string | null
@@ -16,6 +17,7 @@ export function Sidebar({
   onSelect: (id: string) => void
   open: boolean
   onToggle: () => void
+  showReauth?: boolean
 }) {
   return (
     <>
@@ -49,6 +51,11 @@ export function Sidebar({
             ))
           )}
         </nav>
+        {showReauth ? (
+          <a className="reauth-link" href="/api/oauth/start">
+            授权更多页面
+          </a>
+        ) : null}
       </aside>
     </>
   )

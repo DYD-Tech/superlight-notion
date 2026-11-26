@@ -1,6 +1,10 @@
-import { sessionCookie } from '../_lib/auth'
-import { json, type Env } from '../_lib/env'
+import { clearAuthCookies } from '../_lib/auth'
+import { attachCookies, json, type Env } from '../_lib/env'
 
-export const onRequestPost: PagesFunction<Env> = async () => {
-  return json({ ok: true }, 200, { 'set-cookie': sessionCookie('', true) })
+export const onRequestPost: PagesFunction<Env> = async (ctx) => {
+  return attachCookies(json({ ok: true }), clearAuthCookies(ctx.request))
+}
+
+export const onRequestGet: PagesFunction<Env> = async (ctx) => {
+  return attachCookies(json({ ok: true }), clearAuthCookies(ctx.request))
 }

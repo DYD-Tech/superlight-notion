@@ -1,9 +1,9 @@
 import { sessionCookie, sessionToken } from '../_lib/auth'
-import { json, type Env } from '../_lib/env'
+import { json, passwordFallbackEnabled, type Env } from '../_lib/env'
 
 export const onRequestPost: PagesFunction<Env> = async (ctx) => {
-  if (!ctx.env.APP_PASSWORD) {
-    return json({ error: '未配置 APP_PASSWORD' }, 503)
+  if (!passwordFallbackEnabled(ctx.env)) {
+    return json({ error: '未启用密码登录。请使用 Notion 登录。' }, 503)
   }
   let password = ''
   try {
@@ -15,10 +15,6 @@ export const onRequestPost: PagesFunction<Env> = async (ctx) => {
   if (password !== ctx.env.APP_PASSWORD) {
     return json({ error: '密码不正确' }, 401)
   }
-  const token = await sessionToken(ctx.env.APP_PASSWORD)
-  return json(
-    { ok: true },
-    200,
-    { 'set-cookie': sessionCookie(token) }
-  )
+  const token = await sessionToken(ctx.env.APP_PASSWORD!)
+  return json({ ok: true }, 200, { 'set-cookie': sessionCookie(token, ctx.request) })
 }

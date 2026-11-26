@@ -15,9 +15,30 @@ function pageIdFromUrl(): string | null {
   return p ? toUuid(p) : null
 }
 
+function oauthErrorFromUrl(): string | null {
+  const code = new URLSearchParams(window.location.search).get('oauth_error')
+  if (!code) return null
+  if (code === 'state') return '登录校验失败，请再试一次。'
+  if (code === 'access_denied') return '你取消了 Notion 授权。'
+  if (code === 'exchange') return '无法完成 Notion 授权，请重试。'
+  return 'Notion 授权失败，请重试。'
+}
+
+function stripOAuthErrorFromUrl() {
+  const url = new URL(window.location.href)
+  if (!url.searchParams.has('oauth_error')) return
+  url.searchParams.delete('oauth_error')
+  window.history.replaceState(window.history.state, '', url)
+}
+
 export default function App() {
   const [auth, setAuth] = useState<'loading' | 'login' | 'ok'>('loading')
   const [rootPageId, setRootPageId] = useState<string | null>(null)
+  const [workspaceName, setWorkspaceName] = useState<string | null>(null)
+  const [authMode, setAuthMode] = useState<'oauth' | 'password' | null>(null)
+  const [oauthEnabled, setOauthEnabled] = useState(false)
+  const [passwordEnabled, setPasswordEnabled] = useState(false)
+  const [loginError, setLoginError] = useState<string | null>(() => oauthErrorFromUrl())
   const [pages, setPages] = useState<SearchPage[]>([])
   const [query, setQuery] = useState('')
   const [pageId, setPageId] = useState<string | null>(pageIdFromUrl)
@@ -40,16 +61,27 @@ export default function App() {
   const boot = useCallback(async () => {
     try {
       const me = await api.me()
-      setRootPageId(me.rootPageId)
+      setOauthEnabled(me.oauthEnabled)
+      setPasswordEnabled(me.passwordEnabled)
+      if (!me.ok) {
+        setAuth('login')
+        setAuthMode(null)
+        setWorkspaceName(null)
+        return me
+      }
+      setRootPageId(me.rootPageId ?? null)
+      setWorkspaceName(me.workspaceName ?? null)
+      setAuthMode(me.mode ?? null)
       setAuth('ok')
+      stripOAuthErrorFromUrl()
       return me
     } catch (err) {
       if (err instanceof ApiError && (err.status === 401 || err.status === 503)) {
         setAuth('login')
-        if (err.status === 503) setError(err.message)
+        if (err.status === 503) setLoginError(err.message)
         return null
       }
-      setError(err instanceof Error ? err.message : '无法连接')
+      setLoginError(err instanceof Error ? err.message : '无法连接')
       setAuth('login')
       return null
     }
@@ -145,8 +177,12 @@ export default function App() {
   if (auth === 'login') {
     return (
       <LoginForm
+        oauthEnabled={oauthEnabled}
+        passwordEnabled={passwordEnabled}
+        errorMessage={loginError}
         onLogin={async (password) => {
           await api.login(password)
+          setLoginError(null)
           setError(null)
           await boot()
         }}
@@ -164,10 +200,14 @@ export default function App() {
         onSelect={onSelect}
         open={sidebarOpen}
         onToggle={() => setSidebarOpen((v) => !v)}
+        showReauth={authMode === 'oauth'}
       />
       <div className="main">
         <header className="topbar">
-          <div className="topbar-title">{title}</div>
+          <div className="topbar-titles">
+            {workspaceName ? <div className="workspace-name">{workspaceName}</div> : null}
+            <div className="topbar-title">{title}</div>
+          </div>
           <div className="topbar-actions">
             <SaveStatus status={status} message={statusMsg} />
             <button type="button" onClick={() => setDarkMode((v) => !v)}>
@@ -188,6 +228,8 @@ export default function App() {
               onClick={() => {
                 void api.logout().then(() => {
                   setAuth('login')
+                  setAuthMode(null)
+                  setWorkspaceName(null)
                   setPayload(null)
                   setRecordMap(null)
                 })

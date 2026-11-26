@@ -11,8 +11,8 @@ export interface CacheStore {
   delete(key: string): Promise<void>
 }
 
-export function pageCacheKey(pageId: string): string {
-  return `page:v1:${pageId}`
+export function pageCacheKey(pageId: string, tenant = 'internal'): string {
+  return `page:v2:${tenant}:${pageId}`
 }
 
 export function createCache(env: Env, cachesApi?: Cache | null): CacheStore {
@@ -68,8 +68,8 @@ export async function openCacheApi(): Promise<Cache | null> {
   }
 }
 
-export async function invalidatePage(store: CacheStore, pageId: string): Promise<void> {
-  await store.delete(pageCacheKey(pageId))
+export async function invalidatePage(store: CacheStore, pageId: string, tenant = 'internal'): Promise<void> {
+  await store.delete(pageCacheKey(pageId, tenant))
 }
 
 function cacheUrl(key: string): string {
