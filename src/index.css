@@ -318,12 +318,22 @@ a { color: var(--accent); }
 }
 
 .sln-editor {
-  outline: 1px dashed var(--accent);
-  border-radius: 6px;
-  padding: 2px 4px;
-  min-height: 1.4em;
-  margin-top: 6px;
-  background: var(--bg-elev);
+  display: block;
+  width: 100%;
+  font: inherit;
+  color: inherit;
+  line-height: inherit;
+  letter-spacing: inherit;
+  background: transparent;
+  outline: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  min-height: 1em;
+  border-radius: 0;
+  box-shadow: none;
+  white-space: inherit;
+  caret-color: currentColor;
 }
 
 .unsupported-block {

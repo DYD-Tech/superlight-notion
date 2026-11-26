@@ -6,12 +6,16 @@ import { SaveQueue, type SaveStatus } from '../editor/saveQueue'
 import {
   blockIdFromElement,
   findBlockElement,
+  findTextHost,
   isCheckboxClick,
   isChecked,
   isEditableBlock,
   lastEditedOf,
+  mountInlineEditor,
   officialFromEditor,
-  seedEditorHtml
+  placeCaretAtPoint,
+  seedEditorHtml,
+  type InlineEditorSession
 } from '../editor/dom'
 import { officialToDecorations } from '@shared/richText'
 import type { OfficialRichText } from '@shared/types'
@@ -46,6 +50,7 @@ export function PageView({
   onNeedRefresh: () => void
 }) {
   const editorRef = useRef<HTMLElement | null>(null)
+  const sessionRef = useRef<InlineEditorSession | null>(null)
   const editingId = useRef<string | null>(null)
   const queueRef = useRef<SaveQueue | null>(null)
   const recordRef = useRef(recordMap)
@@ -106,11 +111,9 @@ export function PageView({
 
   const teardownEditor = useCallback(
     (commit: boolean) => {
-      const editor = editorRef.current
-      if (editor) {
-        if (commit) commitEditor()
-        editor.remove()
-      }
+      if (editorRef.current && commit) commitEditor()
+      sessionRef.current?.teardown()
+      sessionRef.current = null
       editorRef.current = null
       editingId.current = null
     },
@@ -118,21 +121,17 @@ export function PageView({
   )
 
   const startEditor = useCallback(
-    (blockEl: HTMLElement, blockId: string) => {
+    (blockEl: HTMLElement, blockId: string, ev?: MouseEvent) => {
       if (editingId.current === blockId && editorRef.current) {
-        editorRef.current.focus()
         return
       }
       teardownEditor(true)
-      const editor = document.createElement('div')
-      editor.className = 'sln-editor'
-      editor.contentEditable = 'true'
-      editor.spellcheck = true
-      editor.innerHTML = seedEditorHtml(recordRef.current, blockId)
-      blockEl.appendChild(editor)
-      editorRef.current = editor
+      const host = findTextHost(blockEl)
+      const session = mountInlineEditor(host, seedEditorHtml(recordRef.current, blockId))
+      sessionRef.current = session
+      editorRef.current = session.editor
       editingId.current = blockId
-      placeCaretEnd(editor)
+      placeCaretAtPoint(session.editor, ev?.clientX, ev?.clientY)
     },
     [teardownEditor]
   )
@@ -146,7 +145,10 @@ export function PageView({
       const target = ev.target
       const blockEl = findBlockElement(target)
       const blockId = blockIdFromElement(blockEl)
-      if (!blockEl || !blockId) return
+      if (!blockEl || !blockId) {
+        if (editingId.current) teardownEditor(true)
+        return
+      }
 
       // Internal page links — client-side navigation via query string is handled by the browser.
       if (target instanceof Element && target.closest('a')) {
@@ -168,8 +170,11 @@ export function PageView({
         return
       }
 
-      if (!isEditableBlock(recordRef.current, blockId)) return
-      if (ev.detail >= 1) startEditor(blockEl, blockId)
+      if (!isEditableBlock(recordRef.current, blockId)) {
+        if (editingId.current) teardownEditor(true)
+        return
+      }
+      startEditor(blockEl, blockId, ev)
     }
 
     const onKeyDown = (event: Event) => {
@@ -236,13 +241,26 @@ export function PageView({
       })
     }
 
+    const onPointerDownCapture = (event: Event) => {
+      const editor = editorRef.current
+      if (!editor) return
+      const target = event.target
+      if (target instanceof Node && editor.contains(target)) return
+      const blockEl = findBlockElement(target)
+      const blockId = blockIdFromElement(blockEl)
+      if (blockId && blockId === editingId.current) return
+      teardownEditor(true)
+    }
+
     root.addEventListener('click', onClick)
     root.addEventListener('keydown', onKeyDown)
     root.addEventListener('input', onInput)
+    document.addEventListener('pointerdown', onPointerDownCapture, true)
     return () => {
       root.removeEventListener('click', onClick)
       root.removeEventListener('keydown', onKeyDown)
       root.removeEventListener('input', onInput)
+      document.removeEventListener('pointerdown', onPointerDownCapture, true)
     }
   }, [pageId, onRecordMap, startEditor, commitEditor, teardownEditor])
 
@@ -268,16 +286,6 @@ export function PageView({
       </p>
     </div>
   )
-}
-
-function placeCaretEnd(el: HTMLElement) {
-  el.focus()
-  const range = document.createRange()
-  range.selectNodeContents(el)
-  range.collapse(false)
-  const sel = window.getSelection()
-  sel?.removeAllRanges()
-  sel?.addRange(range)
 }
 
 function wrapSelection(tag: string): string {

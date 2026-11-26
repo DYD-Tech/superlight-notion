@@ -70,39 +70,95 @@ export function lastEditedOf(
   return undefined
 }
 
-const HOST_SELECTORS = [
-  ':scope > .notion-h-content',
-  ':scope > .notion-to-do-item .notion-to-do-body',
-  ':scope > .notion-quote',
-  ':scope.notion-quote',
-  ':scope > .notion-list-item-body',
-  ':scope > span',
-  ':scope > div.notion-text'
-]
+const CHILD_CONTAINER_RE =
+  /\b(notion-text-children|notion-to-do-children|notion-header-anchor|notion-hash-link)\b/
 
-export function findTextHost(blockEl: HTMLElement): HTMLElement | null {
-  for (const sel of HOST_SELECTORS) {
-    try {
-      const hit = blockEl.querySelector(sel)
-      if (hit instanceof HTMLElement) return hit
-    } catch {
-      // :scope may fail in old queries; ignore
+export function isProtectedChild(el: Element): boolean {
+  const cls = el.className?.toString() ?? ''
+  if (CHILD_CONTAINER_RE.test(cls)) return true
+  if (el.classList.contains('notion-list')) return true
+  if (BLOCK_CLASS.test(cls)) return true
+  return false
+}
+
+/**
+ * The element that displays this block's own title/body text, not nested
+ * child blocks, list markers, callout icons, or todo checkboxes.
+ */
+export function findTextHost(blockEl: HTMLElement): HTMLElement {
+  const heading = blockEl.querySelector('.notion-h-title')
+  if (heading instanceof HTMLElement) return heading
+
+  const todo = blockEl.querySelector(':scope .notion-to-do-body')
+  if (todo instanceof HTMLElement) return todo
+
+  const callout = blockEl.querySelector(':scope > .notion-callout-text')
+  if (callout instanceof HTMLElement) return callout
+
+  const summary = blockEl.querySelector(':scope > summary')
+  if (summary instanceof HTMLElement) return summary
+
+  if (blockEl.classList.contains('notion-quote') || blockEl.matches('blockquote')) {
+    const first = blockEl.querySelector(':scope > div')
+    if (first instanceof HTMLElement && !isProtectedChild(first)) return first
+  }
+
+  if (blockEl.classList.contains('notion-list')) {
+    const li = blockEl.querySelector(':scope > li')
+    if (li instanceof HTMLElement) return li
+  }
+
+  return blockEl
+}
+
+export interface InlineEditorSession {
+  editor: HTMLElement
+  host: HTMLElement
+  teardown: () => void
+}
+
+/** Hide the host's own text in place and put a seamless contenteditable in the same spot. */
+export function mountInlineEditor(host: HTMLElement, html: string): InlineEditorSession {
+  const hidden: Array<{ el: HTMLElement; display: string }> = []
+  const stash = document.createDocumentFragment()
+  const firstProtected = Array.from(host.children).find((el) => isProtectedChild(el)) ?? null
+
+  for (const node of Array.from(host.childNodes)) {
+    if (node instanceof Element && isProtectedChild(node)) continue
+    if (node instanceof HTMLElement) {
+      hidden.push({ el: node, display: node.style.display })
+      node.setAttribute('data-sln-hidden', '1')
+      node.style.display = 'none'
+    } else {
+      stash.appendChild(node)
     }
   }
-  // Headings wrap content in an h1/h2/h3
-  const heading = blockEl.querySelector('h1, h2, h3, h4')
-  if (heading instanceof HTMLElement) {
-    const content = heading.querySelector('.notion-h-content')
-    if (content instanceof HTMLElement) return content
-    return heading
+
+  const editor = document.createElement('div')
+  editor.className = 'sln-editor'
+  editor.contentEditable = 'true'
+  editor.spellcheck = true
+  editor.setAttribute('data-sln-editor', '1')
+  editor.innerHTML = html || '<br>'
+
+  if (firstProtected) host.insertBefore(editor, firstProtected)
+  else host.appendChild(editor)
+
+  return {
+    editor,
+    host,
+    teardown() {
+      editor.remove()
+      for (const { el, display } of hidden) {
+        el.style.display = display
+        el.removeAttribute('data-sln-hidden')
+      }
+      if (stash.childNodes.length) {
+        const anchor = Array.from(host.children).find((el) => isProtectedChild(el)) ?? null
+        host.insertBefore(stash, anchor)
+      }
+    }
   }
-  if (blockEl.classList.contains('notion-text')) {
-    // Use the block itself but we'll hide nested child wrappers when swapping in the editor.
-    return blockEl
-  }
-  const li = blockEl.matches('li') ? blockEl : blockEl.querySelector(':scope > li, li')
-  if (li instanceof HTMLElement) return li
-  return blockEl
 }
 
 export function officialFromEditor(editor: HTMLElement): OfficialRichText[] {
@@ -112,4 +168,46 @@ export function officialFromEditor(editor: HTMLElement): OfficialRichText[] {
 export function seedEditorHtml(recordMap: ExtendedRecordMap, blockId: string): string {
   const html = officialToHtml(titleOf(recordMap, blockId))
   return html || '<br>'
+}
+
+export function placeCaretEnd(el: HTMLElement) {
+  el.focus()
+  const range = document.createRange()
+  range.selectNodeContents(el)
+  range.collapse(false)
+  const sel = window.getSelection()
+  sel?.removeAllRanges()
+  sel?.addRange(range)
+}
+
+/** Place the caret at a page point when possible; otherwise at the end of `el`. */
+export function placeCaretAtPoint(el: HTMLElement, clientX?: number, clientY?: number) {
+  el.focus()
+  if (clientX != null && clientY != null) {
+    const doc = document as Document & {
+      caretRangeFromPoint?: (x: number, y: number) => Range | null
+      caretPositionFromPoint?: (
+        x: number,
+        y: number
+      ) => { offsetNode: Node; offset: number } | null
+    }
+    let range: Range | null = null
+    if (typeof doc.caretRangeFromPoint === 'function') {
+      range = doc.caretRangeFromPoint(clientX, clientY)
+    } else if (typeof doc.caretPositionFromPoint === 'function') {
+      const pos = doc.caretPositionFromPoint(clientX, clientY)
+      if (pos) {
+        range = document.createRange()
+        range.setStart(pos.offsetNode, pos.offset)
+        range.collapse(true)
+      }
+    }
+    if (range && el.contains(range.startContainer)) {
+      const sel = window.getSelection()
+      sel?.removeAllRanges()
+      sel?.addRange(range)
+      return
+    }
+  }
+  placeCaretEnd(el)
 }
