@@ -4,7 +4,7 @@ import { decryptSession, encryptSession, type OAuthSession } from '../functions/
 import { handleOAuthCallback, handleOAuthStart } from '../functions/_lib/oauthHandlers'
 import { getAuth } from '../functions/_lib/auth'
 import { handleSearch } from '../functions/_lib/handlers'
-import { ctx, installNotionMock, ROOT } from './helpers'
+import { ctx, installNotionMock, jsonResponse, pageObject, ROOT } from './helpers'
 import { onRequestGet as getMe } from '../functions/api/me'
 
 const ACCESS = 'ntn_test_access_token_do_not_leak'
@@ -201,5 +201,69 @@ describe('OAuth session API', () => {
     expect(searchText).not.toContain(REFRESH)
     const data = JSON.parse(searchText) as { pages: Array<{ title: string }> }
     expect(data.pages.some((p) => p.title === 'Root')).toBe(true)
+  })
+})
+
+describe('OAuth search filtering', () => {
+  it('omits database-row pages and keeps workspace and sub-pages', async () => {
+    const env = oauthEnv()
+    const encrypted = await encryptSession(env.SESSION_SECRET!, {
+      accessToken: ACCESS,
+      refreshToken: REFRESH,
+      workspaceName: 'Work',
+      workspaceId: ROOT,
+      botId: 'bot_1',
+      obtainedAt: Date.now()
+    })
+
+    const subId = 'dddddddd-dddd-dddd-dddd-dddddddddddd'
+    const dbRowId = 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee'
+    const dsRowId = '99999999-9999-9999-9999-999999999999'
+    const workspace = pageObject(ROOT, 'Workspace Home')
+    const sub = pageObject(subId, 'Sub page')
+    sub.parent = { type: 'page_id', page_id: ROOT }
+    const dbRow = pageObject(dbRowId, 'DB row')
+    dbRow.parent = { type: 'database_id', database_id: 'ffffffff-ffff-ffff-ffff-ffffffffffff' }
+    const dsRow = pageObject(dsRowId, 'Data source row')
+    dsRow.parent = { type: 'data_source_id', data_source_id: '11111111-1111-1111-1111-111111111111' }
+
+    const orig = globalThis.fetch
+    globalThis.fetch = (async (input, init) => {
+      const url = new URL(String(input))
+      const method = (init?.method || 'GET').toUpperCase()
+      if (url.pathname === '/v1/search' && method === 'POST') {
+        return jsonResponse({
+          object: 'list',
+          results: [workspace, sub, dbRow, dsRow],
+          next_cursor: null,
+          has_more: false
+        })
+      }
+      return jsonResponse({ object: 'error', message: `unmocked ${method} ${url.pathname}` }, 404)
+    }) as typeof fetch
+
+    try {
+      const res = await handleSearch(
+        ctx(
+          new Request('http://localhost:8788/api/search', {
+            headers: { cookie: `sln_oauth=${encodeURIComponent(encrypted)}` }
+          }),
+          {},
+          env
+        )
+      )
+      expect(res.status).toBe(200)
+      const data = (await res.json()) as {
+        pages: Array<{ id: string; title: string; parentId: string | null }>
+      }
+      expect(data.pages.map((p) => p.title).sort()).toEqual(['Sub page', 'Workspace Home'])
+      const home = data.pages.find((p) => p.id === ROOT)
+      const child = data.pages.find((p) => p.id === subId)
+      expect(home?.parentId).toBeNull()
+      expect(child?.parentId).toBe(ROOT)
+      expect(data.pages.some((p) => p.id === dbRowId || p.id === dsRowId)).toBe(false)
+    } finally {
+      globalThis.fetch = orig
+    }
   })
 })

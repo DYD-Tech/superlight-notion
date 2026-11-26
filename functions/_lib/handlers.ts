@@ -104,6 +104,17 @@ export async function handleSearch(ctx: PagesContext): Promise<Response> {
   })
 }
 
+
+function isDatabaseRowParent(parent: OfficialPage['parent'] | undefined): boolean {
+  const type = parent?.type
+  return type === 'database_id' || type === 'data_source_id'
+}
+
+function searchPageParentId(parent: OfficialPage['parent'] | undefined): string | null {
+  if (parent?.type === 'page_id') return parent.page_id ?? null
+  return null
+}
+
 async function listPagesBySearch(client: NotionClient, query: string): Promise<SearchPage[]> {
   const pages: SearchPage[] = []
   const seen = new Set<string>()
@@ -117,12 +128,13 @@ async function listPagesBySearch(client: NotionClient, query: string): Promise<S
       page_size: 50
     })
     for (const page of res.results as OfficialPage[]) {
+      if (isDatabaseRowParent(page.parent)) continue
       if (seen.has(page.id)) continue
       seen.add(page.id)
       pages.push({
         id: page.id,
         title: pageTitle(page),
-        parentId: parentIdOf(page.parent)
+        parentId: searchPageParentId(page.parent)
       })
     }
     cursor = res.next_cursor ?? undefined
