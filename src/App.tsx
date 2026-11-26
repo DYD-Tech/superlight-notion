@@ -7,6 +7,7 @@ import type { PagePayload } from './api'
 import { LoginForm } from './components/LoginForm'
 import { PageView } from './components/PageView'
 import { SaveStatus } from './components/SaveStatus'
+import { OverviewPage } from './components/OverviewPage'
 import { Sidebar } from './components/Sidebar'
 import type { SaveStatus as Status } from './editor/saveQueue'
 
@@ -100,7 +101,6 @@ export default function App() {
         if (cancelled) return
         setPages(res.pages)
         setRootPageId(res.rootPageId)
-        setPageId((cur) => cur || res.rootPageId)
       })
       .catch((err: unknown) => {
         if (!cancelled) setError(err instanceof Error ? err.message : '搜索失败')
@@ -139,7 +139,11 @@ export default function App() {
   useEffect(() => {
     const onPop = () => {
       const id = pageIdFromUrl()
-      if (id) setPageId(id)
+      setPageId(id)
+      if (!id) {
+        setPayload(null)
+        setRecordMap(null)
+      }
     }
     window.addEventListener('popstate', onPop)
     return () => window.removeEventListener('popstate', onPop)
@@ -151,6 +155,17 @@ export default function App() {
     setSidebarOpen(false)
     setPageId(uuid)
     void loadPage(uuid, true)
+  }
+
+  const onOverview = () => {
+    setSidebarOpen(false)
+    setPageId(null)
+    setPayload(null)
+    setRecordMap(null)
+    setError(null)
+    const url = new URL(window.location.href)
+    url.searchParams.delete('p')
+    window.history.pushState({}, '', url)
   }
 
   const refresh = useCallback(() => {
@@ -167,8 +182,12 @@ export default function App() {
   }, [recordMap, pageId])
 
   useEffect(() => {
+    if (!pageId) {
+      document.title = workspaceName ? `${workspaceName} · 概览` : '概览'
+      return
+    }
     document.title = title
-  }, [title])
+  }, [title, pageId, workspaceName])
 
   if (auth === 'loading') {
     return <div className="centered muted">加载中…</div>
@@ -201,12 +220,14 @@ export default function App() {
         open={sidebarOpen}
         onToggle={() => setSidebarOpen((v) => !v)}
         showReauth={authMode === 'oauth'}
+        overviewActive={!pageId}
+        onOverview={onOverview}
       />
       <div className="main">
         <header className="topbar">
           <div className="topbar-titles">
             {workspaceName ? <div className="workspace-name">{workspaceName}</div> : null}
-            <div className="topbar-title">{title}</div>
+            <div className="topbar-title">{pageId ? title : '概览'}</div>
           </div>
           <div className="topbar-actions">
             <SaveStatus status={status} message={statusMsg} />
@@ -248,7 +269,9 @@ export default function App() {
           </div>
         ) : null}
         {loadingPage && !recordMap ? <div className="centered muted">正在打开页面…</div> : null}
-        {recordMap && pageId ? (
+        {!pageId && !loadingPage ? (
+          <OverviewPage workspaceName={workspaceName} pages={pages} onSelect={onSelect} />
+        ) : recordMap && pageId ? (
           <PageView
             pageId={pageId}
             recordMap={recordMap}
@@ -263,7 +286,7 @@ export default function App() {
             onNeedRefresh={refresh}
           />
         ) : (
-          !loadingPage && <div className="centered muted">选择左侧的一个页面开始阅读。</div>
+          !loadingPage && <div className="centered muted">正在打开页面…</div>
         )}
         {payload && loadingPage ? <div className="progress-bar" /> : null}
       </div>

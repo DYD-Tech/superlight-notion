@@ -15,7 +15,9 @@ export function Sidebar({
   onSelect,
   open,
   onToggle,
-  showReauth
+  showReauth,
+  overviewActive,
+  onOverview
 }: {
   pages: SearchPage[]
   currentId: string | null
@@ -25,6 +27,8 @@ export function Sidebar({
   open: boolean
   onToggle: () => void
   showReauth?: boolean
+  overviewActive?: boolean
+  onOverview?: () => void
 }) {
   const tree = useMemo(() => buildPageTree(pages), [pages])
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
@@ -65,6 +69,14 @@ export function Sidebar({
           />
         </div>
         <nav className="sidebar-list" aria-label="页面列表">
+          <button
+            type="button"
+            className={`nav-overview${overviewActive ? ' active' : ''}`}
+            onClick={() => onOverview?.()}
+          >
+            <OverviewIcon />
+            <span>概览</span>
+          </button>
           {pages.length === 0 ? (
             <div className="sidebar-empty">没有找到页面</div>
           ) : (
@@ -189,3 +201,15 @@ function DocIcon() {
     </svg>
   )
 }
+
+function OverviewIcon() {
+  return (
+    <svg className="tree-doc-icon" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+      <rect x="2.5" y="2.5" width="4.5" height="4.5" rx="0.8" fill="none" stroke="currentColor" strokeWidth="1.2" />
+      <rect x="9" y="2.5" width="4.5" height="4.5" rx="0.8" fill="none" stroke="currentColor" strokeWidth="1.2" />
+      <rect x="2.5" y="9" width="4.5" height="4.5" rx="0.8" fill="none" stroke="currentColor" strokeWidth="1.2" />
+      <rect x="9" y="9" width="4.5" height="4.5" rx="0.8" fill="none" stroke="currentColor" strokeWidth="1.2" />
+    </svg>
+  )
+}
+
