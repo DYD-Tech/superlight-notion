@@ -1,8 +1,7 @@
 import { NotionCompatAPI } from 'notion-compat'
 import type { ExtendedRecordMap } from 'notion-types'
-import { parsePageId } from 'notion-utils'
 import { APPEND_CHILDREN_MAX } from '../../shared/types'
-import { toUuid } from '../../shared/ids'
+import { parsePageId, toUuid } from '../../shared/ids'
 import { HttpError } from './env'
 import { notionLimiter } from './rateLimit'
 

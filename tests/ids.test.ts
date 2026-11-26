@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { notionPageUrl, stripDashes, toUuid } from '../shared/ids'
+import { notionPageUrl, parsePageId, stripDashes, toUuid } from '../shared/ids'
 
 describe('ids', () => {
   it('normalizes compact and dashed ids', () => {
@@ -16,3 +16,16 @@ describe('ids', () => {
     expect(toUuid('')).toBeNull()
   })
 })
+
+  it('parses compact ids, dashed ids, and Notion URLs', () => {
+    const compact = '0123456789abcdef0123456789abcdef'
+    const uuid = '01234567-89ab-cdef-0123-456789abcdef'
+    expect(parsePageId(compact)).toBe(uuid)
+    expect(parsePageId(uuid)).toBe(uuid)
+    expect(parsePageId(`https://www.notion.so/Title-${compact}`)).toBe(uuid)
+    expect(parsePageId(`https://www.notion.so/${uuid}?pvs=4`)).toBe(uuid)
+    expect(parsePageId(compact, { uuid: false })).toBe(compact)
+    expect(parsePageId('')).toBeNull()
+    expect(parsePageId('not-an-id')).toBeNull()
+  })
+

@@ -38,5 +38,6 @@
       "esbuild",
       "workerd"
     ]
-  }
+  },
+  "packageManager": "pnpm@10.34.6"
 }

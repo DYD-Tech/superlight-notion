@@ -9,3 +9,13 @@ pages_build_output_dir = "dist"
 # binding = "PAGE_CACHE"
 # id = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 # preview_id = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
+# These packages ship an `exports` map but no `main` field. Older esbuild used
+# by some Cloudflare Pages Function bundlers cannot resolve them by name.
+# Aliasing to the compiled entry files keeps the Functions bundle working
+# even when package.json has no `main`.
+[alias]
+"notion-utils" = "./node_modules/notion-utils/build/index.js"
+"notion-compat" = "./node_modules/notion-compat/build/index.mjs"
+"notion-types" = "./node_modules/notion-types/build/index.js"
+
