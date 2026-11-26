@@ -3,7 +3,7 @@ import type { ExtendedRecordMap } from 'notion-types'
 import { APPEND_CHILDREN_MAX } from '../../shared/types'
 import { parsePageId, toUuid } from '../../shared/ids'
 import { HttpError } from './env'
-import { createRateLimiter } from './rateLimit'
+import { requestWith429Retry, type SleepFn } from './rateLimit'
 
 export const NOTION_VERSION = '2022-06-28'
 const API = 'https://api.notion.com/v1'
@@ -77,35 +77,40 @@ export interface NotionClient {
   }) => Promise<NotionList<OfficialPage>>
 }
 
-export function createNotionClient(token: string, fetchFn: FetchLike = fetch): NotionClient {
-  const limiter = createRateLimiter()
+export function createNotionClient(
+  token: string,
+  fetchFn: FetchLike = fetch,
+  opts: { sleep?: SleepFn } = {}
+): NotionClient {
   const call = async <T>(method: string, path: string, body?: unknown): Promise<T> => {
-    return limiter.schedule(async () => {
-      const res = await fetchFn(`${API}${path}`, {
-        method,
-        headers: {
-          authorization: `Bearer ${token}`,
-          'notion-version': NOTION_VERSION,
-          'content-type': 'application/json'
-        },
-        body: body === undefined ? undefined : JSON.stringify(body)
-      })
-      const text = await res.text()
-      let data: unknown = null
-      if (text) {
-        try {
-          data = JSON.parse(text)
-        } catch {
-          data = { message: text }
-        }
+    const res = await requestWith429Retry(
+      () =>
+        fetchFn(`${API}${path}`, {
+          method,
+          headers: {
+            authorization: `Bearer ${token}`,
+            'notion-version': NOTION_VERSION,
+            'content-type': 'application/json'
+          },
+          body: body === undefined ? undefined : JSON.stringify(body)
+        }),
+      { sleep: opts.sleep }
+    )
+    const text = await res.text()
+    let data: unknown = null
+    if (text) {
+      try {
+        data = JSON.parse(text)
+      } catch {
+        data = { message: text }
       }
-      if (!res.ok) {
-        const message =
-          (data as { message?: string } | null)?.message || `Notion API ${res.status}`
-        throw new HttpError(res.status, message, data)
-      }
-      return data as T
-    })
+    }
+    if (!res.ok) {
+      const message =
+        (data as { message?: string } | null)?.message || `Notion API ${res.status}`
+      throw new HttpError(res.status, message, data)
+    }
+    return data as T
   }
 
   return {

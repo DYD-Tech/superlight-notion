@@ -1,57 +1,60 @@
-import { NOTION_RATE_PER_SEC } from '../../shared/types'
+export const MAX_429_RETRIES = 3
+export const MAX_RETRY_AFTER_MS = 10_000
+export const DEFAULT_BACKOFF_MS = [500, 1000, 2000] as const
 
-const FAST =
-  (typeof process !== 'undefined' && Boolean((process as { env?: { VITEST?: string } }).env?.VITEST)) ||
-  false
+export type SleepFn = (ms: number) => Promise<void>
 
-function sleep(ms: number): Promise<void> {
+export function defaultSleep(ms: number): Promise<void> {
   if (ms <= 0) return Promise.resolve()
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-/**
- * Per-instance scheduler: allows a burst of `perSecond` starts, then spaces
- * further starts by 1000/perSecond ms. Uses a promise chain + setTimeout only
- * (no Date.now(), no module-level shared queue). In Cloudflare Workers,
- * Date.now() can stay frozen between I/O events, so refill loops that wait
- * for the clock to move can stall; timer delays still fire.
- */
-export class RateLimiter {
-  private readonly perSecond: number
-  private readonly intervalMs: number
-  private tokens: number
-  private gate: Promise<void> = Promise.resolve()
-
-  constructor(perSecond = NOTION_RATE_PER_SEC) {
-    this.perSecond = Math.max(1, perSecond)
-    this.intervalMs = 1000 / this.perSecond
-    this.tokens = this.perSecond
+/** Parse Retry-After as seconds or HTTP-date. Returns milliseconds, or null if missing/invalid. Clamped to [0, 10s]. */
+export function parseRetryAfter(header: string | null | undefined, now = Date.now()): number | null {
+  if (header == null) return null
+  const raw = header.trim()
+  if (!raw) return null
+  if (/^\d+(\.\d+)?$/.test(raw)) {
+    const ms = Number(raw) * 1000
+    if (!Number.isFinite(ms) || ms < 0) return null
+    return clampRetryMs(ms)
   }
-
-  async schedule<T>(fn: () => Promise<T>): Promise<T> {
-    await this.acquire()
-    return fn()
-  }
-
-  private acquire(): Promise<void> {
-    const granted = this.gate.then(() => this.takeSlot())
-    this.gate = granted.then(
-      () => undefined,
-      () => undefined
-    )
-    return granted
-  }
-
-  private async takeSlot(): Promise<void> {
-    if (this.tokens >= 1) {
-      this.tokens -= 1
-      return
-    }
-    await sleep(this.intervalMs)
-  }
+  const at = Date.parse(raw)
+  if (Number.isNaN(at)) return null
+  return clampRetryMs(at - now)
 }
 
-/** Build a limiter scoped to one client/request. In Vitest, default rate is raised so tests stay fast. */
-export function createRateLimiter(perSecond?: number): RateLimiter {
-  return new RateLimiter(perSecond ?? (FAST ? 10_000 : NOTION_RATE_PER_SEC))
+function clampRetryMs(ms: number): number {
+  if (!Number.isFinite(ms)) return 0
+  return Math.min(MAX_RETRY_AFTER_MS, Math.max(0, ms))
+}
+
+export interface Retry429Options {
+  sleep?: SleepFn
+  maxRetries?: number
+  backoffMs?: number[]
+  now?: () => number
+}
+
+/**
+ * Send a request immediately (no pre-emptive pacing). Only waits and retries
+ * when Notion returns HTTP 429. Per-call; no shared module state.
+ */
+export async function requestWith429Retry(
+  send: () => Promise<Response>,
+  opts: Retry429Options = {}
+): Promise<Response> {
+  const sleep = opts.sleep ?? defaultSleep
+  const maxRetries = opts.maxRetries ?? MAX_429_RETRIES
+  const backoff = opts.backoffMs ?? [...DEFAULT_BACKOFF_MS]
+
+  let attempt = 0
+  while (true) {
+    const res = await send()
+    if (res.status !== 429 || attempt >= maxRetries) return res
+    const fromHeader = parseRetryAfter(res.headers.get('Retry-After'), opts.now?.() ?? Date.now())
+    const wait = fromHeader ?? backoff[Math.min(attempt, backoff.length - 1)] ?? DEFAULT_BACKOFF_MS[0]
+    await sleep(wait)
+    attempt += 1
+  }
 }
