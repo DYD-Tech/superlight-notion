@@ -15,6 +15,10 @@ export function pageCacheKey(pageId: string, tenant = 'internal'): string {
   return `page:v2:${tenant}:${pageId}`
 }
 
+export function blockChildrenCacheKey(blockId: string, tenant = 'internal'): string {
+  return `block-children:v1:${tenant}:${blockId}`
+}
+
 export function createCache(env: Env, cachesApi?: Cache | null): CacheStore {
   const kv = env.PAGE_CACHE
   return {
@@ -70,6 +74,14 @@ export async function openCacheApi(): Promise<Cache | null> {
 
 export async function invalidatePage(store: CacheStore, pageId: string, tenant = 'internal'): Promise<void> {
   await store.delete(pageCacheKey(pageId, tenant))
+}
+
+export async function invalidateBlockChildren(
+  store: CacheStore,
+  blockId: string,
+  tenant = 'internal'
+): Promise<void> {
+  await store.delete(blockChildrenCacheKey(blockId, tenant))
 }
 
 function cacheUrl(key: string): string {

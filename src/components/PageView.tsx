@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, type ComponentProps } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, type ComponentProps } from 'react'
 import { NotionRenderer } from 'react-notion-x'
 import type { ExtendedRecordMap } from 'notion-types'
 import { UnsupportedBlock } from './UnsupportedBlock'
@@ -20,6 +20,8 @@ import {
 import { officialToDecorations } from '@shared/richText'
 import type { OfficialRichText } from '@shared/types'
 import { enqueueUpdateIfChanged } from '../editor/changes'
+import { api } from '../api'
+import { stripDashes } from '@shared/ids'
 
 const Code = lazy(() => import('react-notion-x/third-party/code').then((m) => ({ default: m.Code })))
 
@@ -37,7 +39,10 @@ export function PageView({
   rootPageId,
   darkMode,
   blockTimes,
+  lazyBlockIds = [],
   onRecordMap,
+  onBlockTimes,
+  onLazyBlockIds,
   onStatus,
   onNeedRefresh
 }: {
@@ -46,7 +51,10 @@ export function PageView({
   rootPageId: string | null
   darkMode: boolean
   blockTimes: Record<string, string>
+  lazyBlockIds?: string[]
   onRecordMap: (rm: ExtendedRecordMap) => void
+  onBlockTimes?: (times: Record<string, string>) => void
+  onLazyBlockIds?: (ids: string[]) => void
   onStatus: (status: SaveStatus, message?: string) => void
   onNeedRefresh: () => void
 }) {
@@ -59,6 +67,27 @@ export function PageView({
   const lastSavedRef = useRef<Record<string, OfficialRichText[]>>({})
   recordRef.current = recordMap
   timesRef.current = blockTimes
+  const lazyRef = useRef(new Set(lazyBlockIds))
+  const loadedRef = useRef(new Set<string>())
+  const loadingRef = useRef(new Set<string>())
+  const expandedRef = useRef(new Set<string>())
+  lazyRef.current = new Set([...lazyRef.current, ...lazyBlockIds])
+
+  useEffect(() => {
+    lazyRef.current = new Set(lazyBlockIds)
+    loadedRef.current = new Set()
+    loadingRef.current = new Set()
+    expandedRef.current = new Set()
+  }, [pageId])
+
+  useLayoutEffect(() => {
+    const root = document.querySelector('.page-canvas')
+    if (!root) return
+    for (const id of expandedRef.current) {
+      const el = root.querySelector(`details.notion-block-${stripDashes(id)}`) as HTMLDetailsElement | null
+      if (el) el.open = true
+    }
+  }, [recordMap])
 
   useEffect(() => {
     const queue = new SaveQueue({
@@ -262,17 +291,64 @@ export function PageView({
       teardownEditor(true)
     }
 
+    const onToggle = (event: Event) => {
+      const details = event.target
+      if (!(details instanceof HTMLDetailsElement) || !details.classList.contains('notion-toggle')) return
+      if (!details.open) return
+      const blockId = blockIdFromElement(details)
+      if (!blockId) return
+      expandedRef.current.add(blockId)
+      if (!lazyRef.current.has(blockId) || loadedRef.current.has(blockId) || loadingRef.current.has(blockId)) {
+        return
+      }
+      loadingRef.current.add(blockId)
+      void (async () => {
+        try {
+          const data = await api.blockChildren(blockId)
+          const next = cloneRecordMap(recordRef.current)
+          for (const [id, wrap] of Object.entries(data.recordMap.block ?? {})) {
+            if (id === blockId) continue
+            next.block[id] = wrap as (typeof next.block)[string]
+          }
+          const prev = next.block[blockId]
+          if (prev) {
+            const value = { ...(prev as { value: Record<string, unknown> }).value, content: data.content }
+            next.block[blockId] = { ...(prev as object), value } as (typeof next.block)[string]
+          }
+          onRecordMap(next)
+          if (data.lazyBlockIds?.length) {
+            for (const id of data.lazyBlockIds) lazyRef.current.add(id)
+            onLazyBlockIds?.(data.lazyBlockIds)
+          }
+          const times: Record<string, string> = {}
+          for (const [id, wrap] of Object.entries(data.recordMap.block ?? {})) {
+            const raw = (wrap as { value?: { last_edited_time?: number | string } }).value?.last_edited_time
+            if (typeof raw === 'number') times[id] = new Date(raw).toISOString()
+            else if (typeof raw === 'string') times[id] = raw
+          }
+          if (Object.keys(times).length) onBlockTimes?.(times)
+          loadedRef.current.add(blockId)
+        } catch {
+          loadingRef.current.delete(blockId)
+        } finally {
+          loadingRef.current.delete(blockId)
+        }
+      })()
+    }
+
     root.addEventListener('click', onClick)
     root.addEventListener('keydown', onKeyDown)
     root.addEventListener('input', onInput)
+    root.addEventListener('toggle', onToggle, true)
     document.addEventListener('pointerdown', onPointerDownCapture, true)
     return () => {
       root.removeEventListener('click', onClick)
       root.removeEventListener('keydown', onKeyDown)
       root.removeEventListener('input', onInput)
+      root.removeEventListener('toggle', onToggle, true)
       document.removeEventListener('pointerdown', onPointerDownCapture, true)
     }
-  }, [pageId, onRecordMap, startEditor, commitEditor, teardownEditor])
+  }, [pageId, onRecordMap, onBlockTimes, onLazyBlockIds, startEditor, commitEditor, teardownEditor])
 
   return (
     <div className="page-canvas">

@@ -5,6 +5,14 @@ export interface PagePayload {
   pageId: string
   recordMap: ExtendedRecordMap
   lastEditedTime: string | null
+  lazyBlockIds?: string[]
+}
+
+export interface BlockChildrenPayload {
+  blockId: string
+  content: string[]
+  recordMap: ExtendedRecordMap
+  lazyBlockIds?: string[]
 }
 
 export interface MeResponse {
@@ -85,5 +93,10 @@ export const api = {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body)
-    }).then((r) => parseJson<{ results: Array<{ id: string }>; parentId: string }>(r))
+    }).then((r) => parseJson<{ results: Array<{ id: string }>; parentId: string }>(r)),
+
+  blockChildren: (id: string) =>
+    fetch(`/api/block/${encodeURIComponent(id)}/children`).then((r) =>
+      parseJson<BlockChildrenPayload>(r)
+    )
 }

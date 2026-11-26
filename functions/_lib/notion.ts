@@ -1,4 +1,4 @@
-import { NotionCompatAPI } from 'notion-compat'
+import { convertPage, NotionCompatAPI } from 'notion-compat'
 import type { ExtendedRecordMap } from 'notion-types'
 import { APPEND_CHILDREN_MAX } from '../../shared/types'
 import { parsePageId, toUuid } from '../../shared/ids'
@@ -191,21 +191,212 @@ export function createCompat(client: NotionClient): NotionCompatAPI {
   return new NotionCompatAPI(client as unknown as ConstructorParameters<typeof NotionCompatAPI>[0])
 }
 
-export async function getRecordMap(
+export const CHILDREN_PAGE_SIZE = 100
+export const RESOLVE_CONCURRENCY = 4
+
+export interface RecordMapResult {
+  pageId: string
+  recordMap: ExtendedRecordMap
+  lastEditedTime: string | null
+  lazyBlockIds: string[]
+}
+
+export interface BlockChildrenResult {
+  blockId: string
+  content: string[]
+  recordMap: ExtendedRecordMap
+  lazyBlockIds: string[]
+}
+
+export function isLazyToggleBlock(block: OfficialBlock): boolean {
+  if (!block.has_children) return false
+  if (block.type === 'toggle') return true
+  if (block.type === 'heading_1' || block.type === 'heading_2' || block.type === 'heading_3') {
+    const details = block[block.type] as { is_toggleable?: boolean } | undefined
+    return details?.is_toggleable === true
+  }
+  return false
+}
+
+export function shouldExpandChildren(block: OfficialBlock): boolean {
+  if (!block.has_children) return false
+  if (block.type === 'child_database' || block.type === 'child_page') return false
+  if (isLazyToggleBlock(block)) return false
+  return true
+}
+
+function linkToPageId(block: OfficialBlock): string | null {
+  if (block.type !== 'link_to_page') return null
+  const link = (
+    block as OfficialBlock & { link_to_page?: { type?: string; page_id?: string } }
+  ).link_to_page
+  if (link?.type === 'page_id' && link.page_id) return link.page_id
+  return null
+}
+
+class ConcurrencyLimit {
+  private running = 0
+  private readonly waiters: Array<() => void> = []
+  constructor(private readonly max: number) {}
+  async run<T>(fn: () => Promise<T>): Promise<T> {
+    if (this.running >= this.max) {
+      await new Promise<void>((resolve) => this.waiters.push(resolve))
+    }
+    this.running += 1
+    try {
+      return await fn()
+    } finally {
+      this.running -= 1
+      this.waiters.shift()?.()
+    }
+  }
+}
+
+export async function listAllChildren(
   client: NotionClient,
-  rawPageId: string
-): Promise<{ pageId: string; recordMap: ExtendedRecordMap; lastEditedTime: string | null }> {
+  blockId: string
+): Promise<OfficialBlock[]> {
+  const results: OfficialBlock[] = []
+  let cursor: string | undefined
+  do {
+    const res = await client.blocks.children.list({
+      block_id: blockId,
+      start_cursor: cursor,
+      page_size: CHILDREN_PAGE_SIZE
+    })
+    results.push(...res.results)
+    cursor = res.has_more && res.next_cursor ? res.next_cursor : undefined
+  } while (cursor)
+  return results
+}
+
+interface LeanMaps {
+  blockMap: Record<string, OfficialBlock>
+  blockChildrenMap: Record<string, string[]>
+  pageMap: Record<string, OfficialPage>
+  parentMap: Record<string, string>
+  lazyBlockIds: string[]
+  rootChildren: OfficialBlock[]
+}
+
+async function resolveLean(client: NotionClient, rootId: string, seedPage?: OfficialPage): Promise<LeanMaps> {
+  const blockMap: Record<string, OfficialBlock> = {}
+  const blockChildrenMap: Record<string, string[]> = {}
+  const pageMap: Record<string, OfficialPage> = {}
+  const parentMap: Record<string, string> = {}
+  const lazyBlockIds: string[] = []
+  const seenLazy = new Set<string>()
+  const limit = new ConcurrencyLimit(RESOLVE_CONCURRENCY)
+
+  if (seedPage) pageMap[seedPage.id] = seedPage
+
+  async function ingest(parentId: string, children: OfficialBlock[]): Promise<void> {
+    blockChildrenMap[parentId] = children.map((child) => child.id)
+    const jobs: Promise<void>[] = []
+    for (const child of children) {
+      blockMap[child.id] = child
+      parentMap[child.id] = parentId
+      if (isLazyToggleBlock(child)) {
+        if (!seenLazy.has(child.id)) {
+          seenLazy.add(child.id)
+          lazyBlockIds.push(child.id)
+        }
+        continue
+      }
+      const linked = linkToPageId(child)
+      if (linked) {
+        jobs.push(
+          limit.run(async () => {
+            if (pageMap[linked]) return
+            try {
+              const page = await client.pages.retrieve({ page_id: linked })
+              pageMap[page.id] = page
+            } catch {
+              // Alias still renders without a title if the retrieve fails.
+            }
+          })
+        )
+      }
+      if (shouldExpandChildren(child)) {
+        jobs.push(limit.run(() => expand(child.id)))
+      }
+    }
+    await Promise.all(jobs)
+  }
+
+  async function expand(blockId: string): Promise<void> {
+    if (blockChildrenMap[blockId]) return
+    const children = await listAllChildren(client, blockId)
+    await ingest(blockId, children)
+  }
+
+  const rootChildren = await listAllChildren(client, rootId)
+  await ingest(rootId, rootChildren)
+  return { blockMap, blockChildrenMap, pageMap, parentMap, lazyBlockIds, rootChildren }
+}
+
+function toCompatMaps(maps: LeanMaps) {
+  return {
+    blockMap: maps.blockMap as unknown as Parameters<typeof convertPage>[0]['blockMap'],
+    blockChildrenMap: maps.blockChildrenMap,
+    pageMap: maps.pageMap as unknown as Parameters<typeof convertPage>[0]['pageMap'],
+    parentMap: maps.parentMap
+  }
+}
+
+function applyToggleableFormat(recordMap: ExtendedRecordMap, blockMap: Record<string, OfficialBlock>) {
+  for (const block of Object.values(blockMap)) {
+    if (block.type !== 'heading_1' && block.type !== 'heading_2' && block.type !== 'heading_3') continue
+    const details = block[block.type] as { is_toggleable?: boolean } | undefined
+    if (!details?.is_toggleable) continue
+    const wrap = recordMap.block[block.id] as { value?: { format?: Record<string, unknown> } } | undefined
+    if (!wrap?.value) continue
+    wrap.value.format = { ...(wrap.value.format ?? {}), toggleable: true }
+  }
+}
+
+function buildRecordMap(pageId: string, maps: LeanMaps, raw?: unknown): ExtendedRecordMap {
+  const recordMap = convertPage({ pageId, ...toCompatMaps(maps) })
+  applyToggleableFormat(recordMap, maps.blockMap)
+  if (raw !== undefined) {
+    ;(recordMap as unknown as { raw?: unknown }).raw = raw
+  }
+  return recordMap
+}
+
+export async function fetchRecordMap(client: NotionClient, rawPageId: string): Promise<RecordMapResult> {
   const pageId = parsePageId(rawPageId) || toUuid(rawPageId)
   if (!pageId) {
     throw new HttpError(400, `无效的页面 ID: ${rawPageId}`)
   }
-  const compat = createCompat(withReadDedup(client))
-  const recordMap = await compat.getPage(pageId)
-  const lastEditedTime =
-    ((recordMap as unknown as { raw?: { page?: { last_edited_time?: string } } }).raw?.page
-      ?.last_edited_time as string | undefined) ||
-    findBlockTime(recordMap, pageId)
-  return { pageId, recordMap, lastEditedTime }
+  const deduped = withReadDedup(client)
+  const page = await deduped.pages.retrieve({ page_id: pageId })
+  const maps = await resolveLean(deduped, pageId, page)
+  const recordMap = buildRecordMap(pageId, maps, { page, children: maps.rootChildren })
+  const lastEditedTime = page.last_edited_time || findBlockTime(recordMap, pageId)
+  return { pageId, recordMap, lastEditedTime, lazyBlockIds: maps.lazyBlockIds }
+}
+
+export async function fetchBlockChildren(
+  client: NotionClient,
+  rawBlockId: string
+): Promise<BlockChildrenResult> {
+  const blockId = parsePageId(rawBlockId) || toUuid(rawBlockId)
+  if (!blockId) {
+    throw new HttpError(400, `无效的块 ID: ${rawBlockId}`)
+  }
+  const maps = await resolveLean(withReadDedup(client), blockId)
+  const recordMap = buildRecordMap(blockId, maps)
+  return {
+    blockId,
+    content: maps.blockChildrenMap[blockId] ?? [],
+    recordMap,
+    lazyBlockIds: maps.lazyBlockIds
+  }
+}
+
+export async function getRecordMap(client: NotionClient, rawPageId: string): Promise<RecordMapResult> {
+  return fetchRecordMap(client, rawPageId)
 }
 
 function findBlockTime(recordMap: ExtendedRecordMap, pageId: string): string | null {

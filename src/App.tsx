@@ -45,6 +45,7 @@ export default function App() {
   const [payload, setPayload] = useState<PagePayload | null>(null)
   const [recordMap, setRecordMap] = useState<ExtendedRecordMap | null>(null)
   const [blockTimes, setBlockTimes] = useState<Record<string, string>>({})
+  const [lazyBlockIds, setLazyBlockIds] = useState<string[]>([])
   const [error, setError] = useState<string | null>(null)
   const [status, setStatus] = useState<Status>('idle')
   const [statusMsg, setStatusMsg] = useState<string | undefined>()
@@ -118,6 +119,7 @@ export default function App() {
       setPayload(data)
       setRecordMap(data.recordMap)
       setBlockTimes(collectTimes(data))
+      setLazyBlockIds(data.lazyBlockIds ?? [])
       setPageId(data.pageId)
       if (replaceUrl) {
         const url = new URL(window.location.href)
@@ -255,7 +257,10 @@ export default function App() {
             rootPageId={rootPageId}
             darkMode={darkMode}
             blockTimes={blockTimes}
+            lazyBlockIds={lazyBlockIds}
             onRecordMap={setRecordMap}
+            onBlockTimes={(times) => setBlockTimes((prev) => ({ ...prev, ...times }))}
+            onLazyBlockIds={(ids) => setLazyBlockIds((prev) => Array.from(new Set([...prev, ...ids])))}
             onStatus={(s, m) => {
               setStatus(s)
               setStatusMsg(m)

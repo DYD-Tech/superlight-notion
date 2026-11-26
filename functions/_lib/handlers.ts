@@ -11,7 +11,9 @@ import {
   type Env
 } from './env'
 import {
+  blockChildrenCacheKey,
   createCache,
+  invalidateBlockChildren,
   invalidatePage,
   openCacheApi,
   pageCacheKey,
@@ -19,6 +21,7 @@ import {
 } from './cache'
 import {
   createNotionClient,
+  fetchBlockChildren,
   getRecordMap,
   pageTitle,
   parentIdOf,
@@ -78,8 +81,44 @@ export async function handleGetPage(ctx: PagesContext): Promise<Response> {
     const payload = await getRecordMap(client, pageId)
     const body = JSON.stringify(payload)
     const ttl = PAGE_CACHE_TTL_SECONDS
-    ctx.waitUntil?.(cache.set(key, body, ttl))
-    await cache.set(key, body, ttl)
+    const write = cache.set(key, body, ttl)
+    if (ctx.waitUntil) ctx.waitUntil(write)
+    else await write
+    return new Response(body, {
+      status: 200,
+      headers: {
+        'content-type': 'application/json; charset=utf-8',
+        'x-cache': 'MISS',
+        'cache-control': 'no-store'
+      }
+    })
+  })
+}
+
+export async function handleGetBlockChildren(ctx: PagesContext): Promise<Response> {
+  const rawId = ctx.params.id || ''
+  const blockId = toUuid(decodeURIComponent(rawId))
+  if (!blockId) return json({ error: '无效的块 ID' }, 400)
+  return withNotion(ctx, async (client, access) => {
+    const cache = createCache(ctx.env, await openCacheApi())
+    const key = blockChildrenCacheKey(blockId, access.tenant)
+    const hit = await cache.get(key)
+    if (hit) {
+      return new Response(hit, {
+        status: 200,
+        headers: {
+          'content-type': 'application/json; charset=utf-8',
+          'x-cache': 'HIT',
+          'cache-control': 'no-store'
+        }
+      })
+    }
+    const payload = await fetchBlockChildren(client, blockId)
+    const body = JSON.stringify(payload)
+    const ttl = PAGE_CACHE_TTL_SECONDS
+    const write = cache.set(key, body, ttl)
+    if (ctx.waitUntil) ctx.waitUntil(write)
+    else await write
     return new Response(body, {
       status: 200,
       headers: {
@@ -125,7 +164,7 @@ async function listPagesBySearch(client: NotionClient, query: string): Promise<S
       query: query || undefined,
       filter: { property: 'object', value: 'page' },
       start_cursor: cursor,
-      page_size: 50
+      page_size: 100
     })
     for (const page of res.results as OfficialPage[]) {
       if (isDatabaseRowParent(page.parent)) continue
@@ -407,7 +446,9 @@ async function invalidateByPage(
       // ignore
     }
   }
+  if (toUuid(block.id)) ids.add(toUuid(block.id)!)
   for (const id of ids) {
     await invalidatePage(cache, id, tenant)
+    await invalidateBlockChildren(cache, id, tenant)
   }
 }
