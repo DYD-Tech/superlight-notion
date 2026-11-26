@@ -3,7 +3,7 @@ import type { ExtendedRecordMap } from 'notion-types'
 import { APPEND_CHILDREN_MAX } from '../../shared/types'
 import { parsePageId, toUuid } from '../../shared/ids'
 import { HttpError } from './env'
-import { notionLimiter } from './rateLimit'
+import { createRateLimiter } from './rateLimit'
 
 export const NOTION_VERSION = '2022-06-28'
 const API = 'https://api.notion.com/v1'
@@ -78,8 +78,9 @@ export interface NotionClient {
 }
 
 export function createNotionClient(token: string, fetchFn: FetchLike = fetch): NotionClient {
+  const limiter = createRateLimiter()
   const call = async <T>(method: string, path: string, body?: unknown): Promise<T> => {
-    return notionLimiter.schedule(async () => {
+    return limiter.schedule(async () => {
       const res = await fetchFn(`${API}${path}`, {
         method,
         headers: {
