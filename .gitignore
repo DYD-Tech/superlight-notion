@@ -1,0 +1,12 @@
+node_modules
+dist
+.dev.vars
+.wrangler
+.vite
+*.local
+.DS_Store
+coverage
+tsconfig.tsbuildinfo
+tsconfig.app.tsbuildinfo
+tsconfig.node.tsbuildinfo
+functions/tsconfig.tsbuildinfo

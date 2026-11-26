@@ -1,0 +1,4 @@
+# Copy to .dev.vars for local development. Do not commit .dev.vars.
+NOTION_TOKEN=secret_xxxxxxxx
+NOTION_ROOT_PAGE_ID=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+APP_PASSWORD=change-me

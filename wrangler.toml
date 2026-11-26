@@ -1,0 +1,11 @@
+name = "superlight-notion"
+compatibility_date = "2026-11-26"
+compatibility_flags = ["nodejs_compat"]
+pages_build_output_dir = "dist"
+
+# Optional KV cache. If bound, page payloads are also stored here.
+# Create a namespace, then uncomment and fill in the IDs:
+# [[kv_namespaces]]
+# binding = "PAGE_CACHE"
+# id = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+# preview_id = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
