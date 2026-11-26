@@ -19,6 +19,20 @@ export function annotationsEqual(a: RichTextAnnotations, b: RichTextAnnotations)
   )
 }
 
+export function richTextEqual(a: OfficialRichText[], b: OfficialRichText[]): boolean {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) {
+    const left = a[i]
+    const right = b[i]
+    if (!left || !right) return false
+    if (left.type !== right.type) return false
+    if (left.text.content !== right.text.content) return false
+    if ((left.text.link?.url ?? null) !== (right.text.link?.url ?? null)) return false
+    if (!annotationsEqual(left.annotations, right.annotations)) return false
+  }
+  return true
+}
+
 export function decorationsToOfficial(title: Decoration[] | undefined): OfficialRichText[] {
   if (!title?.length) return []
   const items: OfficialRichText[] = []

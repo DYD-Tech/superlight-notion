@@ -59,6 +59,20 @@ export class SaveQueue {
     await this.drain()
   }
 
+  /** Drop a pending text update so a later no-op can cancel an unsent edit. */
+  cancelUpdate(blockId: string) {
+    const key = `update:${blockId}`
+    if (!this.pending.has(key)) return
+    this.pending.delete(key)
+    if (this.pending.size === 0 && !this.running) {
+      if (this.timer) {
+        clearTimeout(this.timer)
+        this.timer = null
+      }
+      this.onStatus?.('idle')
+    }
+  }
+
   private key(op: SaveOp): string {
     if (op.kind === 'update') return `update:${op.blockId}`
     if (op.kind === 'delete') return `delete:${op.blockId}`

@@ -19,6 +19,7 @@ import {
 } from '../editor/dom'
 import { officialToDecorations } from '@shared/richText'
 import type { OfficialRichText } from '@shared/types'
+import { enqueueUpdateIfChanged } from '../editor/changes'
 
 const Code = lazy(() => import('react-notion-x/third-party/code').then((m) => ({ default: m.Code })))
 
@@ -55,6 +56,7 @@ export function PageView({
   const queueRef = useRef<SaveQueue | null>(null)
   const recordRef = useRef(recordMap)
   const timesRef = useRef(blockTimes)
+  const lastSavedRef = useRef<Record<string, OfficialRichText[]>>({})
   recordRef.current = recordMap
   timesRef.current = blockTimes
 
@@ -66,6 +68,7 @@ export function PageView({
         if (op.kind === 'update' && result && typeof result === 'object' && 'block' in result) {
           const t = (result as { block?: { last_edited_time?: string } }).block?.last_edited_time
           if (t) timesRef.current[op.blockId] = t
+          if (op.richText) lastSavedRef.current[op.blockId] = op.richText
         }
         if (op.kind === 'append' || op.kind === 'delete') onNeedRefresh()
       }
@@ -97,21 +100,26 @@ export function PageView({
   const commitEditor = useCallback(() => {
     const editor = editorRef.current
     const id = editingId.current
-    if (!editor || !id) return
+    const queue = queueRef.current
+    if (!editor || !id || !queue) return
     const richText = officialFromEditor(editor)
-    patchLocalTitle(recordRef.current, id, richText, onRecordMap)
-    queueRef.current?.enqueue({
+    const changed = enqueueUpdateIfChanged(queue, lastSavedRef.current[id], {
       kind: 'update',
       blockId: id,
       pageId,
       richText,
       lastEditedTime: lastEditedOf(recordRef.current, id, timesRef.current)
     })
+    if (!changed) return
+    patchLocalTitle(recordRef.current, id, richText, onRecordMap)
+    lastSavedRef.current[id] = richText
   }, [onRecordMap, pageId])
 
   const teardownEditor = useCallback(
     (commit: boolean) => {
+      const id = editingId.current
       if (editorRef.current && commit) commitEditor()
+      else if (id) queueRef.current?.cancelUpdate(id)
       sessionRef.current?.teardown()
       sessionRef.current = null
       editorRef.current = null
@@ -131,6 +139,7 @@ export function PageView({
       sessionRef.current = session
       editorRef.current = session.editor
       editingId.current = blockId
+      lastSavedRef.current[blockId] = officialFromEditor(session.editor)
       placeCaretAtPoint(session.editor, ev?.clientX, ev?.clientY)
     },
     [teardownEditor]
@@ -228,11 +237,12 @@ export function PageView({
     }
 
     const onInput = () => {
-      if (!editorRef.current || !editingId.current) return
-      // Debounced save without tearing down the editor.
+      const editor = editorRef.current
       const id = editingId.current
-      const richText = officialFromEditor(editorRef.current)
-      queueRef.current?.enqueue({
+      const queue = queueRef.current
+      if (!editor || !id || !queue) return
+      const richText = officialFromEditor(editor)
+      enqueueUpdateIfChanged(queue, lastSavedRef.current[id], {
         kind: 'update',
         blockId: id,
         pageId,

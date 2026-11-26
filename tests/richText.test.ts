@@ -5,6 +5,7 @@ import {
   officialPlainText,
   officialToDecorations,
   officialToHtml,
+  richTextEqual,
   splitRichTextItems
 } from '../shared/richText'
 import { RICH_TEXT_ITEM_MAX, type OfficialRichText } from '../shared/types'
@@ -64,5 +65,27 @@ describe('rich text', () => {
     const back = htmlToOfficial('<a href="https://dydlab.com">hi</a>')
     expect(officialPlainText(back)).toBe('hi')
     expect(back[0]?.text.link?.url).toBe('https://dydlab.com')
+  })
+})
+
+describe('richTextEqual', () => {
+  it('treats structurally equal items as equal and ignores derived fields', () => {
+    const a = [item('Hello', { bold: true })]
+    const b: OfficialRichText[] = [
+      {
+        ...item('Hello', { bold: true }),
+        plain_text: 'Hello',
+        href: null
+      }
+    ]
+    expect(richTextEqual(a, b)).toBe(true)
+    expect(richTextEqual([], [])).toBe(true)
+  })
+
+  it('detects content, annotation, and link differences', () => {
+    expect(richTextEqual([item('A')], [item('B')])).toBe(false)
+    expect(richTextEqual([item('A', { bold: true })], [item('A')])).toBe(false)
+    expect(richTextEqual([item('A', { url: 'https://a.example' })], [item('A')])).toBe(false)
+    expect(richTextEqual([item('A'), item('B')], [item('A')])).toBe(false)
   })
 })
