@@ -144,14 +144,14 @@ function pathCalls(calls: RecordedCall[], suffix: string, method = 'GET') {
   return calls.filter((c) => c.method === method && c.path === `/v1${suffix}`)
 }
 
-function mockClient(handler: (url: URL, method: string, body: unknown) => unknown) {
+function mockClient(handler: (url: URL, method: string, body: unknown) => unknown | Promise<unknown>) {
   const calls: RecordedCall[] = []
   const fetchFn: FetchLike = async (input, init) => {
     const url = new URL(String(input))
     const method = (init?.method || 'GET').toUpperCase()
     const body = init?.body ? JSON.parse(String(init.body)) : null
     calls.push({ method, path: url.pathname, search: url.searchParams.toString(), body })
-    const data = handler(url, method, body)
+    const data = await handler(url, method, body)
     if (data === undefined) {
       return jsonResponse({ object: 'error', message: `unmocked ${method} ${url.pathname}` }, 404)
     }
@@ -340,4 +340,70 @@ describe('GET /api/block/:id/children and search page_size', () => {
       globalThis.fetch = orig
     }
   })
+})
+
+describe('nested container concurrency', () => {
+  it('does not deadlock when nested containers fill the concurrency pool', async () => {
+    const list = '11111111-1111-1111-1111-111111111111'
+    const cols = [
+      '21111111-1111-1111-1111-111111111111',
+      '22111111-1111-1111-1111-111111111111',
+      '23111111-1111-1111-1111-111111111111'
+    ]
+    const callouts = [
+      '31111111-1111-1111-1111-111111111111',
+      '32111111-1111-1111-1111-111111111111',
+      '33111111-1111-1111-1111-111111111111'
+    ]
+    const paras = [
+      '41111111-1111-1111-1111-111111111111',
+      '42111111-1111-1111-1111-111111111111',
+      '43111111-1111-1111-1111-111111111111'
+    ]
+
+    function container(id: string, parent: string, type: 'column_list' | 'column' | 'callout', has_children = true) {
+      return {
+        object: 'block',
+        id,
+        type,
+        has_children,
+        archived: false,
+        last_edited_time: LAST,
+        created_time: '2026-01-01T00:00:00.000Z',
+        parent: { type: parent === ROOT ? 'page_id' : 'block_id', [parent === ROOT ? 'page_id' : 'block_id']: parent },
+        [type]: type === 'callout' ? { rich_text: richText('Note'), color: 'default' } : {}
+      }
+    }
+
+    const { client } = mockClient(async (url, method) => {
+      // delay so all four parent slots can be acquired before grandchildren schedule
+      await new Promise((resolve) => setTimeout(resolve, 15))
+      if (method !== 'GET') return undefined
+      if (url.pathname === `/v1/pages/${ROOT}`) return pageObject(ROOT, 'Workbench', LAST)
+      if (url.pathname === `/v1/blocks/${ROOT}/children`) return childList([container(list, ROOT, 'column_list')])
+      if (url.pathname === `/v1/blocks/${list}/children`) {
+        return childList(cols.map((id) => container(id, list, 'column')))
+      }
+      for (let i = 0; i < 3; i += 1) {
+        if (url.pathname === `/v1/blocks/${cols[i]}/children`) {
+          return childList([container(callouts[i], cols[i], 'callout')])
+        }
+        if (url.pathname === `/v1/blocks/${callouts[i]}/children`) {
+          return childList([textBlock(paras[i], callouts[i], 'Body', LAST)])
+        }
+      }
+      return undefined
+    })
+
+    const result = await Promise.race([
+      getRecordMap(client, ROOT),
+      new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error('timed out — nested container expansion likely deadlocked')), 4000)
+      })
+    ])
+    expect(result.recordMap.block[list]).toBeTruthy()
+    for (const id of [...cols, ...callouts, ...paras]) {
+      expect(result.recordMap.block[id]).toBeTruthy()
+    }
+  }, 8000)
 })

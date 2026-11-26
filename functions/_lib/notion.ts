@@ -234,21 +234,53 @@ function linkToPageId(block: OfficialBlock): string | null {
   return null
 }
 
-class ConcurrencyLimit {
+/**
+ * Bounded queue that never holds a slot while waiting for nested work.
+ * A recursive limiter deadlocks when column_list -> column -> callout
+ * already fill RESOLVE_CONCURRENCY and then try to expand grandchildren.
+ */
+class TaskPool {
   private running = 0
-  private readonly waiters: Array<() => void> = []
+  private error: unknown = null
+  private readonly pending: Array<() => Promise<void>> = []
+  private idleResolvers: Array<() => void> = []
   constructor(private readonly max: number) {}
-  async run<T>(fn: () => Promise<T>): Promise<T> {
-    if (this.running >= this.max) {
-      await new Promise<void>((resolve) => this.waiters.push(resolve))
+
+  enqueue(task: () => Promise<void>): void {
+    this.pending.push(task)
+    this.pump()
+  }
+
+  private pump(): void {
+    while (this.running < this.max && this.pending.length) {
+      const task = this.pending.shift()!
+      this.running += 1
+      void task()
+        .catch((err) => {
+          if (this.error == null) this.error = err
+        })
+        .finally(() => {
+          this.running -= 1
+          this.pump()
+          if (this.running === 0 && this.pending.length === 0) {
+            const resolvers = this.idleResolvers
+            this.idleResolvers = []
+            for (const resolve of resolvers) resolve()
+          }
+        })
     }
-    this.running += 1
-    try {
-      return await fn()
-    } finally {
-      this.running -= 1
-      this.waiters.shift()?.()
+  }
+
+  onIdle(): Promise<void> {
+    if (this.running === 0 && this.pending.length === 0) {
+      return this.error == null ? Promise.resolve() : Promise.reject(this.error)
     }
+    return new Promise((resolve, reject) => {
+      this.idleResolvers.push(() => {
+        if (this.error == null) resolve()
+        else reject(this.error)
+      })
+    })
   }
 }
 
@@ -286,13 +318,12 @@ async function resolveLean(client: NotionClient, rootId: string, seedPage?: Offi
   const parentMap: Record<string, string> = {}
   const lazyBlockIds: string[] = []
   const seenLazy = new Set<string>()
-  const limit = new ConcurrencyLimit(RESOLVE_CONCURRENCY)
+  const pool = new TaskPool(RESOLVE_CONCURRENCY)
 
   if (seedPage) pageMap[seedPage.id] = seedPage
 
-  async function ingest(parentId: string, children: OfficialBlock[]): Promise<void> {
+  function ingest(parentId: string, children: OfficialBlock[]): void {
     blockChildrenMap[parentId] = children.map((child) => child.id)
-    const jobs: Promise<void>[] = []
     for (const child of children) {
       blockMap[child.id] = child
       parentMap[child.id] = parentId
@@ -305,33 +336,31 @@ async function resolveLean(client: NotionClient, rootId: string, seedPage?: Offi
       }
       const linked = linkToPageId(child)
       if (linked) {
-        jobs.push(
-          limit.run(async () => {
-            if (pageMap[linked]) return
-            try {
-              const page = await client.pages.retrieve({ page_id: linked })
-              pageMap[page.id] = page
-            } catch {
-              // Alias still renders without a title if the retrieve fails.
-            }
-          })
-        )
+        pool.enqueue(async () => {
+          if (pageMap[linked]) return
+          try {
+            const page = await client.pages.retrieve({ page_id: linked })
+            pageMap[page.id] = page
+          } catch {
+            // Alias still renders without a title if the retrieve fails.
+          }
+        })
       }
-      if (shouldExpandChildren(child)) {
-        jobs.push(limit.run(() => expand(child.id)))
-      }
+      if (shouldExpandChildren(child)) scheduleExpand(child.id)
     }
-    await Promise.all(jobs)
   }
 
-  async function expand(blockId: string): Promise<void> {
-    if (blockChildrenMap[blockId]) return
-    const children = await listAllChildren(client, blockId)
-    await ingest(blockId, children)
+  function scheduleExpand(blockId: string): void {
+    pool.enqueue(async () => {
+      if (blockChildrenMap[blockId]) return
+      const children = await listAllChildren(client, blockId)
+      ingest(blockId, children)
+    })
   }
 
   const rootChildren = await listAllChildren(client, rootId)
-  await ingest(rootId, rootChildren)
+  ingest(rootId, rootChildren)
+  await pool.onIdle()
   return { blockMap, blockChildrenMap, pageMap, parentMap, lazyBlockIds, rootChildren }
 }
 
