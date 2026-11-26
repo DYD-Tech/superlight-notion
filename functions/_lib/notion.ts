@@ -143,6 +143,49 @@ export function createNotionClient(
   }
 }
 
+function memoizeRead<K, V>(map: Map<K, Promise<V>>, key: K, run: () => Promise<V>): Promise<V> {
+  const existing = map.get(key)
+  if (existing) return existing
+  const pending = run()
+  map.set(key, pending)
+  return pending.catch((err) => {
+    if (map.get(key) === pending) map.delete(key)
+    throw err
+  })
+}
+
+/**
+ * Per-call wrapper that reuses in-flight/resolved read Promises so
+ * NotionCompatAPI.getPage + resolvePage do not re-fetch the same endpoints.
+ * Scoped to the returned client; no module-level shared state.
+ */
+export function withReadDedup(client: NotionClient): NotionClient {
+  const pages = new Map<string, Promise<OfficialPage>>()
+  const blocks = new Map<string, Promise<OfficialBlock>>()
+  const children = new Map<string, Promise<NotionList<OfficialBlock>>>()
+
+  return {
+    pages: {
+      retrieve: (args) => memoizeRead(pages, args.page_id, () => client.pages.retrieve(args))
+    },
+    blocks: {
+      retrieve: (args) => memoizeRead(blocks, args.block_id, () => client.blocks.retrieve(args)),
+      update: (args) => client.blocks.update(args),
+      delete: (args) => client.blocks.delete(args),
+      children: {
+        list: (args) =>
+          memoizeRead(
+            children,
+            `${args.block_id}\0${args.start_cursor ?? ''}\0${args.page_size ?? ''}`,
+            () => client.blocks.children.list(args)
+          ),
+        append: (args) => client.blocks.children.append(args)
+      }
+    },
+    search: (args) => client.search(args)
+  }
+}
+
 export function createCompat(client: NotionClient): NotionCompatAPI {
   // NotionCompatAPI only needs pages.retrieve, blocks.retrieve, blocks.children.list.
   return new NotionCompatAPI(client as unknown as ConstructorParameters<typeof NotionCompatAPI>[0])
@@ -156,7 +199,7 @@ export async function getRecordMap(
   if (!pageId) {
     throw new HttpError(400, `无效的页面 ID: ${rawPageId}`)
   }
-  const compat = createCompat(client)
+  const compat = createCompat(withReadDedup(client))
   const recordMap = await compat.getPage(pageId)
   const lastEditedTime =
     ((recordMap as unknown as { raw?: { page?: { last_edited_time?: string } } }).raw?.page
