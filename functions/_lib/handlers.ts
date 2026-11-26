@@ -17,7 +17,8 @@ import {
   invalidatePage,
   openCacheApi,
   pageCacheKey,
-  PAGE_CACHE_TTL_SECONDS
+  PAGE_CACHE_TTL_SECONDS,
+  rememberBlockChildrenKey
 } from './cache'
 import {
   createNotionClient,
@@ -99,9 +100,12 @@ export async function handleGetBlockChildren(ctx: PagesContext): Promise<Respons
   const rawId = ctx.params.id || ''
   const blockId = toUuid(decodeURIComponent(rawId))
   if (!blockId) return json({ error: '无效的块 ID' }, 400)
+  const pageId = toUuid(new URL(ctx.request.url).searchParams.get('pageId') || '')
   return withNotion(ctx, async (client, access) => {
     const cache = createCache(ctx.env, await openCacheApi())
-    const key = blockChildrenCacheKey(blockId, access.tenant)
+    const key = pageId
+      ? rememberBlockChildrenKey(pageId, blockId, access.tenant)
+      : blockChildrenCacheKey(blockId, access.tenant)
     const hit = await cache.get(key)
     if (hit) {
       return new Response(hit, {

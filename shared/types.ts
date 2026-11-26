@@ -83,3 +83,29 @@ export const DEFAULT_ANNOTATIONS: RichTextAnnotations = {
   code: false,
   color: 'default'
 }
+
+/** First-page size for official database queries (no per-row fetches). */
+export const DATABASE_QUERY_PAGE_SIZE = 50
+
+export interface DatabasePropertySchema {
+  id: string
+  name: string
+  type: string
+}
+
+export interface DatabaseRow {
+  id: string
+  properties: Record<string, unknown>
+  url?: string
+  lastEditedTime?: string | null
+}
+
+export interface DatabaseView {
+  id: string
+  title: string
+  icon?: string | null
+  properties: DatabasePropertySchema[]
+  rows: DatabaseRow[]
+  hasMore: boolean
+  error?: string | null
+}

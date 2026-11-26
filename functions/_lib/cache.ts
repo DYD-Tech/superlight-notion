@@ -4,6 +4,8 @@ export const PAGE_CACHE_TTL_SECONDS = 120
 export const IMAGE_CACHE_TTL_SECONDS = 50 * 60
 
 const MEMORY = new Map<string, { body: string; expires: number }>()
+/** In-memory index of block-children keys fetched for a page (this isolate only). */
+const CHILD_KEYS = new Map<string, Set<string>>()
 
 export interface CacheStore {
   get(key: string): Promise<string | null>
@@ -17,6 +19,22 @@ export function pageCacheKey(pageId: string, tenant = 'internal'): string {
 
 export function blockChildrenCacheKey(blockId: string, tenant = 'internal'): string {
   return `block-children:v1:${tenant}:${blockId}`
+}
+
+export function rememberBlockChildrenKey(
+  pageId: string,
+  blockId: string,
+  tenant = 'internal'
+): string {
+  const key = blockChildrenCacheKey(blockId, tenant)
+  const idx = `${tenant}:${pageId}`
+  let keys = CHILD_KEYS.get(idx)
+  if (!keys) {
+    keys = new Set()
+    CHILD_KEYS.set(idx, keys)
+  }
+  keys.add(key)
+  return key
 }
 
 export function createCache(env: Env, cachesApi?: Cache | null): CacheStore {
@@ -74,6 +92,11 @@ export async function openCacheApi(): Promise<Cache | null> {
 
 export async function invalidatePage(store: CacheStore, pageId: string, tenant = 'internal'): Promise<void> {
   await store.delete(pageCacheKey(pageId, tenant))
+  const keys = CHILD_KEYS.get(`${tenant}:${pageId}`)
+  if (keys) {
+    for (const key of keys) await store.delete(key)
+    CHILD_KEYS.delete(`${tenant}:${pageId}`)
+  }
 }
 
 export async function invalidateBlockChildren(
@@ -91,4 +114,5 @@ function cacheUrl(key: string): string {
 /** Test helper. */
 export function _clearMemoryCache() {
   MEMORY.clear()
+  CHILD_KEYS.clear()
 }

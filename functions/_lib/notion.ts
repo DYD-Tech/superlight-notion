@@ -1,6 +1,7 @@
 import { convertPage, NotionCompatAPI } from 'notion-compat'
 import type { ExtendedRecordMap } from 'notion-types'
-import { APPEND_CHILDREN_MAX } from '../../shared/types'
+import { APPEND_CHILDREN_MAX, DATABASE_QUERY_PAGE_SIZE, type DatabaseView } from '../../shared/types'
+import { databaseTitleFromSchema, emptyDatabaseView, orderDatabaseProperties } from '../../shared/database'
 import { parsePageId, toUuid } from '../../shared/ids'
 import { HttpError } from './env'
 import { requestWith429Retry, type SleepFn } from './rateLimit'
@@ -75,6 +76,24 @@ export interface NotionClient {
     start_cursor?: string
     page_size?: number
   }) => Promise<NotionList<OfficialPage>>
+  databases: {
+    retrieve: (args: { database_id: string }) => Promise<OfficialDatabase>
+    query: (args: {
+      database_id: string
+      page_size?: number
+      start_cursor?: string
+    }) => Promise<NotionList<OfficialPage>>
+  }
+}
+
+export interface OfficialDatabase {
+  object: 'database'
+  id: string
+  title?: unknown
+  properties?: Record<string, { id?: string; name?: string; type?: string }>
+  icon?: unknown
+  url?: string
+  [key: string]: unknown
 }
 
 export function createNotionClient(
@@ -139,7 +158,15 @@ export function createNotionClient(
         }
       }
     },
-    search: (args) => call('POST', '/search', args)
+    search: (args) => call('POST', '/search', args),
+    databases: {
+      retrieve: ({ database_id }) => call('GET', `/databases/${database_id}`),
+      query: ({ database_id, page_size, start_cursor }) =>
+        call('POST', `/databases/${database_id}/query`, {
+          page_size,
+          start_cursor
+        })
+    }
   }
 }
 
@@ -163,6 +190,8 @@ export function withReadDedup(client: NotionClient): NotionClient {
   const pages = new Map<string, Promise<OfficialPage>>()
   const blocks = new Map<string, Promise<OfficialBlock>>()
   const children = new Map<string, Promise<NotionList<OfficialBlock>>>()
+  const dbRetrieve = new Map<string, Promise<OfficialDatabase>>()
+  const dbQuery = new Map<string, Promise<NotionList<OfficialPage>>>()
 
   return {
     pages: {
@@ -182,7 +211,17 @@ export function withReadDedup(client: NotionClient): NotionClient {
         append: (args) => client.blocks.children.append(args)
       }
     },
-    search: (args) => client.search(args)
+    search: (args) => client.search(args),
+    databases: {
+      retrieve: (args) =>
+        memoizeRead(dbRetrieve, args.database_id, () => client.databases.retrieve(args)),
+      query: (args) =>
+        memoizeRead(
+          dbQuery,
+          `${args.database_id}\0${args.start_cursor ?? ''}\0${args.page_size ?? ''}`,
+          () => client.databases.query(args)
+        )
+    }
   }
 }
 
@@ -193,12 +232,16 @@ export function createCompat(client: NotionClient): NotionCompatAPI {
 
 export const CHILDREN_PAGE_SIZE = 100
 export const RESOLVE_CONCURRENCY = 4
+/** Cap concurrent schema+query jobs so POSTs stay under Notion's ~3/sec data-source limit. */
+export const DATABASE_QUERY_CONCURRENCY = 2
+export { DATABASE_QUERY_PAGE_SIZE }
 
 export interface RecordMapResult {
   pageId: string
   recordMap: ExtendedRecordMap
   lastEditedTime: string | null
   lazyBlockIds: string[]
+  databases: Record<string, DatabaseView>
 }
 
 export interface BlockChildrenResult {
@@ -206,6 +249,7 @@ export interface BlockChildrenResult {
   content: string[]
   recordMap: ExtendedRecordMap
   lazyBlockIds: string[]
+  databases: Record<string, DatabaseView>
 }
 
 export function isLazyToggleBlock(block: OfficialBlock): boolean {
@@ -302,6 +346,61 @@ export async function listAllChildren(
   return results
 }
 
+function databaseIcon(icon: unknown): string | null {
+  if (!icon || typeof icon !== 'object') return null
+  const value = icon as { type?: string; emoji?: unknown }
+  return value.type === 'emoji' && typeof value.emoji === 'string' ? value.emoji : null
+}
+
+export async function retrieveDatabaseView(
+  client: NotionClient,
+  databaseId: string
+): Promise<DatabaseView> {
+  const schema = await client.databases.retrieve({ database_id: databaseId })
+  const query = await client.databases.query({
+    database_id: databaseId,
+    page_size: DATABASE_QUERY_PAGE_SIZE
+  })
+  return {
+    id: schema.id || databaseId,
+    title: databaseTitleFromSchema(schema),
+    icon: databaseIcon(schema.icon),
+    properties: orderDatabaseProperties(schema.properties),
+    rows: (query.results ?? []).map((page) => ({
+      id: page.id,
+      properties: (page.properties ?? {}) as Record<string, unknown>,
+      url: page.url,
+      lastEditedTime: page.last_edited_time ?? null
+    })),
+    hasMore: Boolean(query.has_more)
+  }
+}
+
+export async function loadDatabaseViews(
+  client: NotionClient,
+  ids: string[]
+): Promise<Record<string, DatabaseView>> {
+  const unique = [...new Set(ids.filter(Boolean))]
+  const databases: Record<string, DatabaseView> = {}
+  const pool = new TaskPool(DATABASE_QUERY_CONCURRENCY)
+  const jobs = unique.map(
+    (id) =>
+      new Promise<void>((resolve) => {
+        pool.enqueue(async () => {
+          try {
+            databases[id] = await retrieveDatabaseView(client, id)
+          } catch {
+            databases[id] = emptyDatabaseView(id)
+          } finally {
+            resolve()
+          }
+        })
+      })
+  )
+  await Promise.all(jobs)
+  return databases
+}
+
 interface LeanMaps {
   blockMap: Record<string, OfficialBlock>
   blockChildrenMap: Record<string, string[]>
@@ -309,6 +408,7 @@ interface LeanMaps {
   parentMap: Record<string, string>
   lazyBlockIds: string[]
   rootChildren: OfficialBlock[]
+  databases: Record<string, DatabaseView>
 }
 
 async function resolveLean(client: NotionClient, rootId: string, seedPage?: OfficialPage): Promise<LeanMaps> {
@@ -318,15 +418,40 @@ async function resolveLean(client: NotionClient, rootId: string, seedPage?: Offi
   const parentMap: Record<string, string> = {}
   const lazyBlockIds: string[] = []
   const seenLazy = new Set<string>()
+  const databases: Record<string, DatabaseView> = {}
+  const dbJobs = new Map<string, Promise<void>>()
   const pool = new TaskPool(RESOLVE_CONCURRENCY)
+  const dbPool = new TaskPool(DATABASE_QUERY_CONCURRENCY)
 
-  if (seedPage) pageMap[seedPage.id] = seedPage
+  if (seedPage) {
+    pageMap[seedPage.id] = { ...seedPage, properties: seedPage.properties ?? {} }
+  }
+
+  function scheduleDatabase(databaseId: string): void {
+    if (dbJobs.has(databaseId)) return
+    const job = new Promise<void>((resolve) => {
+      dbPool.enqueue(async () => {
+        try {
+          databases[databaseId] = await retrieveDatabaseView(client, databaseId)
+        } catch {
+          databases[databaseId] = emptyDatabaseView(databaseId)
+        } finally {
+          resolve()
+        }
+      })
+    })
+    dbJobs.set(databaseId, job)
+  }
 
   function ingest(parentId: string, children: OfficialBlock[]): void {
     blockChildrenMap[parentId] = children.map((child) => child.id)
     for (const child of children) {
       blockMap[child.id] = child
       parentMap[child.id] = parentId
+      if (child.type === 'child_database') {
+        scheduleDatabase(child.id)
+        continue
+      }
       if (isLazyToggleBlock(child)) {
         if (!seenLazy.has(child.id)) {
           seenLazy.add(child.id)
@@ -340,7 +465,7 @@ async function resolveLean(client: NotionClient, rootId: string, seedPage?: Offi
           if (pageMap[linked]) return
           try {
             const page = await client.pages.retrieve({ page_id: linked })
-            pageMap[page.id] = page
+            pageMap[page.id] = { ...page, properties: page.properties ?? {} }
           } catch {
             // Alias still renders without a title if the retrieve fails.
           }
@@ -361,7 +486,8 @@ async function resolveLean(client: NotionClient, rootId: string, seedPage?: Offi
   const rootChildren = await listAllChildren(client, rootId)
   ingest(rootId, rootChildren)
   await pool.onIdle()
-  return { blockMap, blockChildrenMap, pageMap, parentMap, lazyBlockIds, rootChildren }
+  await Promise.all(dbJobs.values())
+  return { blockMap, blockChildrenMap, pageMap, parentMap, lazyBlockIds, rootChildren, databases }
 }
 
 function toCompatMaps(maps: LeanMaps) {
@@ -384,9 +510,30 @@ function applyToggleableFormat(recordMap: ExtendedRecordMap, blockMap: Record<st
   }
 }
 
+function applyDatabaseViews(
+  recordMap: ExtendedRecordMap,
+  blockMap: Record<string, OfficialBlock>,
+  databases: Record<string, DatabaseView>
+) {
+  for (const block of Object.values(blockMap)) {
+    if (block.type !== 'child_database') continue
+    const wrap = recordMap.block[block.id] as
+      | { value?: { type?: string; properties?: Record<string, unknown> } }
+      | undefined
+    if (!wrap?.value) continue
+    const rawTitle = (block as OfficialBlock & { child_database?: { title?: string } }).child_database
+      ?.title
+    const title =
+      (typeof rawTitle === 'string' && rawTitle) || databases[block.id]?.title || '无标题'
+    wrap.value.type = 'collection_view'
+    wrap.value.properties = { title: [[title]] }
+  }
+}
+
 function buildRecordMap(pageId: string, maps: LeanMaps, raw?: unknown): ExtendedRecordMap {
   const recordMap = convertPage({ pageId, ...toCompatMaps(maps) })
   applyToggleableFormat(recordMap, maps.blockMap)
+  applyDatabaseViews(recordMap, maps.blockMap, maps.databases)
   if (raw !== undefined) {
     ;(recordMap as unknown as { raw?: unknown }).raw = raw
   }
@@ -403,7 +550,7 @@ export async function fetchRecordMap(client: NotionClient, rawPageId: string): P
   const maps = await resolveLean(deduped, pageId, page)
   const recordMap = buildRecordMap(pageId, maps, { page, children: maps.rootChildren })
   const lastEditedTime = page.last_edited_time || findBlockTime(recordMap, pageId)
-  return { pageId, recordMap, lastEditedTime, lazyBlockIds: maps.lazyBlockIds }
+  return { pageId, recordMap, lastEditedTime, lazyBlockIds: maps.lazyBlockIds, databases: maps.databases }
 }
 
 export async function fetchBlockChildren(
@@ -420,7 +567,8 @@ export async function fetchBlockChildren(
     blockId,
     content: maps.blockChildrenMap[blockId] ?? [],
     recordMap,
-    lazyBlockIds: maps.lazyBlockIds
+    lazyBlockIds: maps.lazyBlockIds,
+    databases: maps.databases
   }
 }
 

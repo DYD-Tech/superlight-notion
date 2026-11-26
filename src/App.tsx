@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { ExtendedRecordMap } from 'notion-types'
 import { toUuid } from '@shared/ids'
-import type { SearchPage } from '@shared/types'
+import type { DatabaseView, SearchPage } from '@shared/types'
 import { api, ApiError } from './api'
 import type { PagePayload } from './api'
 import { LoginForm } from './components/LoginForm'
@@ -46,6 +46,7 @@ export default function App() {
   const [recordMap, setRecordMap] = useState<ExtendedRecordMap | null>(null)
   const [blockTimes, setBlockTimes] = useState<Record<string, string>>({})
   const [lazyBlockIds, setLazyBlockIds] = useState<string[]>([])
+  const [databases, setDatabases] = useState<Record<string, DatabaseView>>({})
   const [error, setError] = useState<string | null>(null)
   const [status, setStatus] = useState<Status>('idle')
   const [statusMsg, setStatusMsg] = useState<string | undefined>()
@@ -120,6 +121,7 @@ export default function App() {
       setRecordMap(data.recordMap)
       setBlockTimes(collectTimes(data))
       setLazyBlockIds(data.lazyBlockIds ?? [])
+      setDatabases(data.databases ?? {})
       setPageId(data.pageId)
       if (replaceUrl) {
         const url = new URL(window.location.href)
@@ -234,6 +236,7 @@ export default function App() {
                   setWorkspaceName(null)
                   setPayload(null)
                   setRecordMap(null)
+                  setDatabases({})
                 })
               }}
             >
@@ -258,9 +261,11 @@ export default function App() {
             darkMode={darkMode}
             blockTimes={blockTimes}
             lazyBlockIds={lazyBlockIds}
+            databases={databases}
             onRecordMap={setRecordMap}
             onBlockTimes={(times) => setBlockTimes((prev) => ({ ...prev, ...times }))}
             onLazyBlockIds={(ids) => setLazyBlockIds((prev) => Array.from(new Set([...prev, ...ids])))}
+            onDatabases={(incoming) => setDatabases((prev) => ({ ...prev, ...incoming }))}
             onStatus={(s, m) => {
               setStatus(s)
               setStatusMsg(m)

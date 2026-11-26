@@ -1,4 +1,4 @@
-import type { OfficialRichText, SearchPage } from '@shared/types'
+import type { DatabaseView, OfficialRichText, SearchPage } from '@shared/types'
 import type { ExtendedRecordMap } from 'notion-types'
 
 export interface PagePayload {
@@ -6,6 +6,7 @@ export interface PagePayload {
   recordMap: ExtendedRecordMap
   lastEditedTime: string | null
   lazyBlockIds?: string[]
+  databases?: Record<string, DatabaseView>
 }
 
 export interface BlockChildrenPayload {
@@ -13,6 +14,7 @@ export interface BlockChildrenPayload {
   content: string[]
   recordMap: ExtendedRecordMap
   lazyBlockIds?: string[]
+  databases?: Record<string, DatabaseView>
 }
 
 export interface MeResponse {
@@ -95,8 +97,10 @@ export const api = {
       body: JSON.stringify(body)
     }).then((r) => parseJson<{ results: Array<{ id: string }>; parentId: string }>(r)),
 
-  blockChildren: (id: string) =>
-    fetch(`/api/block/${encodeURIComponent(id)}/children`).then((r) =>
-      parseJson<BlockChildrenPayload>(r)
-    )
+  blockChildren: (id: string, pageId?: string) =>
+    fetch(
+      `/api/block/${encodeURIComponent(id)}/children${
+        pageId ? `?pageId=${encodeURIComponent(pageId)}` : ''
+      }`
+    ).then((r) => parseJson<BlockChildrenPayload>(r))
 }
