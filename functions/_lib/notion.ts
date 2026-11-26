@@ -5,6 +5,7 @@ import { databaseTitleFromSchema, emptyDatabaseView, orderDatabaseProperties } f
 import { parsePageId, toUuid } from '../../shared/ids'
 import { HttpError } from './env'
 import { requestWith429Retry, type SleepFn } from './rateLimit'
+import { describeNotionCall, peekRateLimitReason, type RequestMetrics } from './notionMetrics'
 
 export const NOTION_VERSION = '2022-06-28'
 const API = 'https://api.notion.com/v1'
@@ -99,12 +100,13 @@ export interface OfficialDatabase {
 export function createNotionClient(
   token: string,
   fetchFn: FetchLike = fetch,
-  opts: { sleep?: SleepFn } = {}
+  opts: { sleep?: SleepFn; metrics?: RequestMetrics } = {}
 ): NotionClient {
   const call = async <T>(method: string, path: string, body?: unknown): Promise<T> => {
+    const described = describeNotionCall(method, path)
     const res = await requestWith429Retry(
-      () =>
-        fetchFn(`${API}${path}`, {
+      async () => {
+        const attempt = await fetchFn(`${API}${path}`, {
           method,
           headers: {
             authorization: `Bearer ${token}`,
@@ -112,7 +114,22 @@ export function createNotionClient(
             'content-type': 'application/json'
           },
           body: body === undefined ? undefined : JSON.stringify(body)
-        }),
+        })
+        if (opts.metrics) {
+          const rateLimitReason =
+            attempt.status === 429 || attempt.status === 529
+              ? await peekRateLimitReason(attempt)
+              : undefined
+          opts.metrics.record({
+            method,
+            endpoint: described.endpoint,
+            query: described.query,
+            status: attempt.status,
+            rateLimitReason
+          })
+        }
+        return attempt
+      },
       { sleep: opts.sleep }
     )
     const text = await res.text()

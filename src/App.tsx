@@ -3,10 +3,12 @@ import type { ExtendedRecordMap } from 'notion-types'
 import { toUuid } from '@shared/ids'
 import type { DatabaseView, SearchPage } from '@shared/types'
 import { api, ApiError } from './api'
+import { relabelLastAction } from './metrics'
 import type { PagePayload } from './api'
 import { LoginForm } from './components/LoginForm'
 import { PageView } from './components/PageView'
 import { SaveStatus } from './components/SaveStatus'
+import { RequestMeter } from './components/RequestMeter'
 import { Sidebar } from './components/Sidebar'
 import type { SaveStatus as Status } from './editor/saveQueue'
 
@@ -123,6 +125,8 @@ export default function App() {
       setLazyBlockIds(data.lazyBlockIds ?? [])
       setDatabases(data.databases ?? {})
       setPageId(data.pageId)
+      const title = pageTitleFromMap(data.recordMap, data.pageId)
+      if (title) relabelLastAction(title)
       if (replaceUrl) {
         const url = new URL(window.location.href)
         url.searchParams.set('p', data.pageId.replace(/-/g, ''))
@@ -276,6 +280,7 @@ export default function App() {
           !loadingPage && <div className="centered muted">选择左侧的一个页面开始阅读。</div>
         )}
         {payload && loadingPage ? <div className="progress-bar" /> : null}
+        <RequestMeter />
       </div>
     </div>
   )
@@ -297,4 +302,12 @@ function collectTimes(data: PagePayload): Record<string, string> {
     if (typeof t === 'string' && t.includes('T')) times[id] = t
   }
   return times
+}
+
+function pageTitleFromMap(recordMap: ExtendedRecordMap, pageId: string): string | null {
+  const wrap = recordMap.block[pageId] as
+    | { value?: { properties?: { title?: Array<[string]> } } }
+    | undefined
+  const title = wrap?.value?.properties?.title?.map((x) => x[0]).join('')
+  return title || null
 }

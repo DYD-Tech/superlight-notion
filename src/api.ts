@@ -1,5 +1,6 @@
 import type { DatabaseView, OfficialRichText, SearchPage } from '@shared/types'
 import type { ExtendedRecordMap } from 'notion-types'
+import { ingestResponseMeta, type ResponseMeta } from './metrics'
 
 export interface PagePayload {
   pageId: string
@@ -30,7 +31,24 @@ export interface MeResponse {
 }
 
 async function parseJson<T>(res: Response): Promise<T> {
-  const data = (await res.json().catch(() => ({}))) as T & { error?: string; message?: string }
+  const data = (await res.json().catch(() => ({}))) as T & {
+    error?: string
+    message?: string
+    meta?: ResponseMeta
+  }
+  if (data && typeof data === 'object' && 'meta' in data) {
+    ingestResponseMeta(data.meta)
+  } else {
+    const count = Number(res.headers.get('X-Notion-Requests') || '')
+    const action = res.headers.get('X-Notion-Action')
+    if (Number.isFinite(count) && action) {
+      ingestResponseMeta({
+        action: action as ResponseMeta['action'],
+        cache: (res.headers.get('x-cache') as ResponseMeta['cache']) || null,
+        notionRequests: []
+      })
+    }
+  }
   if (!res.ok) {
     const err = new ApiError(res.status, data.error || data.message || `请求失败 (${res.status})`, data)
     throw err

@@ -31,6 +31,12 @@ import {
   type OfficialPage
 } from './notion'
 import { refreshIfNeeded, resolveAccessToken, type AccessResolution } from './auth'
+import {
+  attachMetrics,
+  createRequestMetrics,
+  debugMetricsPayload,
+  type NotionAction
+} from './notionMetrics'
 
 export interface PagesContext {
   request: Request
@@ -42,19 +48,21 @@ export interface PagesContext {
 
 async function withNotion(
   ctx: PagesContext,
-  fn: (client: NotionClient, access: AccessResolution) => Promise<Response>
+  fn: (client: NotionClient, access: AccessResolution) => Promise<Response>,
+  action: NotionAction = 'unknown'
 ): Promise<Response> {
+  const metrics = createRequestMetrics(action)
   try {
     let access = await resolveAccessToken(ctx.request, ctx.env)
     try {
-      const res = await fn(createNotionClient(access.token), access)
-      return attachCookies(res, access.cookies)
+      const res = await fn(createNotionClient(access.token, fetch, { metrics }), access)
+      return attachCookies(await attachMetrics(res, metrics), access.cookies)
     } catch (err) {
       if (!(err instanceof HttpError) || err.status !== 401) throw err
       const refreshed = await refreshIfNeeded(ctx.env, ctx.request, access)
       if (!refreshed) throw err
-      const res = await fn(createNotionClient(refreshed.token), refreshed)
-      return attachCookies(res, refreshed.cookies)
+      const res = await fn(createNotionClient(refreshed.token, fetch, { metrics }), refreshed)
+      return attachCookies(await attachMetrics(res, metrics), refreshed.cookies)
     }
   } catch (err) {
     return errorResponse(err)
@@ -93,7 +101,7 @@ export async function handleGetPage(ctx: PagesContext): Promise<Response> {
         'cache-control': 'no-store'
       }
     })
-  })
+  }, 'page_open')
 }
 
 export async function handleGetBlockChildren(ctx: PagesContext): Promise<Response> {
@@ -131,7 +139,7 @@ export async function handleGetBlockChildren(ctx: PagesContext): Promise<Respons
         'cache-control': 'no-store'
       }
     })
-  })
+  }, 'toggle_expand')
 }
 
 export async function handleSearch(ctx: PagesContext): Promise<Response> {
@@ -144,7 +152,7 @@ export async function handleSearch(ctx: PagesContext): Promise<Response> {
       ? await listPagesBySearch(client, q)
       : await listPagesUnderRoot(client, root!, q)
     return json({ pages, rootPageId: root })
-  })
+  }, 'sidebar_load')
 }
 
 
@@ -302,7 +310,7 @@ export async function handlePatchBlock(ctx: PagesContext): Promise<Response> {
     const updated = await client.blocks.update({ block_id: blockId, ...patch })
     await invalidateByPage(ctx, client, body.pageId, current, access.tenant)
     return json({ block: updated })
-  })
+  }, 'block_edit')
 }
 
 export async function handleDeleteBlock(ctx: PagesContext): Promise<Response> {
@@ -315,7 +323,7 @@ export async function handleDeleteBlock(ctx: PagesContext): Promise<Response> {
     const deleted = await client.blocks.delete({ block_id: blockId })
     await invalidateByPage(ctx, client, pageId, current, access.tenant)
     return json({ block: deleted })
-  })
+  }, 'block_delete')
 }
 
 export async function handleAppendChild(ctx: PagesContext): Promise<Response> {
@@ -354,7 +362,7 @@ export async function handleAppendChild(ctx: PagesContext): Promise<Response> {
     })
     await invalidateByPage(ctx, client, body.pageId, current, access.tenant)
     return json({ results: appended.results, parentId })
-  })
+  }, 'block_append')
 }
 
 export async function handleImageProxy(ctx: PagesContext): Promise<Response> {
@@ -454,5 +462,18 @@ async function invalidateByPage(
   for (const id of ids) {
     await invalidatePage(cache, id, tenant)
     await invalidateBlockChildren(cache, id, tenant)
+  }
+}
+
+
+export async function handleDebugMetrics(ctx: PagesContext): Promise<Response> {
+  try {
+    const access = await resolveAccessToken(ctx.request, ctx.env)
+    const url = new URL(ctx.request.url)
+    const plan = url.searchParams.get('plan') === '600' ? 600 : 180
+    const payload = debugMetricsPayload(plan)
+    return attachCookies(json(payload), access.cookies)
+  } catch (err) {
+    return errorResponse(err)
   }
 }

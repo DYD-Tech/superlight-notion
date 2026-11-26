@@ -518,3 +518,93 @@ html.dark .db-table-wrap {
 html.dark .db-table th { background: #1f1f1f; }
 .dark .db-tag,
 html.dark .db-tag { background: #333; }
+
+.req-meter {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 30;
+  font-size: 12px;
+  max-width: min(360px, calc(100vw - 24px));
+}
+.req-meter-pill {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  border: 1px solid var(--border, #e3e2e0);
+  background: var(--bg, #fff);
+  border-radius: 999px;
+  padding: 6px 10px;
+  box-shadow: var(--shadow, 0 2px 8px rgba(0,0,0,.08));
+  cursor: pointer;
+  color: inherit;
+}
+.req-meter-query { color: var(--muted, #787774); }
+.req-meter-query.hot { color: #c4554d; font-weight: 600; }
+.req-meter-pop {
+  margin-bottom: 8px;
+  border: 1px solid var(--border, #e3e2e0);
+  background: var(--bg, #fff);
+  border-radius: 10px;
+  padding: 10px 12px;
+  box-shadow: var(--shadow, 0 8px 24px rgba(0,0,0,.12));
+  max-height: min(60vh, 420px);
+  overflow: auto;
+  position: absolute;
+  right: 0;
+  bottom: 36px;
+  width: min(360px, calc(100vw - 24px));
+}
+.req-meter-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.req-meter-plan { display: flex; gap: 4px; }
+.req-meter-plan button {
+  border: 1px solid var(--border, #e3e2e0);
+  background: transparent;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 12px;
+  cursor: pointer;
+  color: inherit;
+}
+.req-meter-plan button.on {
+  background: #111;
+  color: #fff;
+  border-color: #111;
+}
+.req-meter-actions {
+  margin: 8px 0 0;
+  padding-left: 16px;
+  max-height: 180px;
+  overflow: auto;
+}
+.req-meter-actions ul {
+  margin: 2px 0 6px;
+  padding-left: 16px;
+  color: var(--muted, #787774);
+}
+.req-meter-note {
+  margin: 8px 0 0;
+  font-size: 11px;
+  color: var(--muted, #787774);
+  line-height: 1.4;
+}
+.req-meter-429 { margin-top: 8px; color: #c4554d; }
+.dark .req-meter-pill,
+.dark .req-meter-pop,
+html.dark .req-meter-pill,
+html.dark .req-meter-pop {
+  background: #1b1b1b;
+  border-color: #333;
+}
+.dark .req-meter-plan button.on,
+html.dark .req-meter-plan button.on {
+  background: #eee;
+  color: #111;
+  border-color: #eee;
+}
