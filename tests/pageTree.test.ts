@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SearchPage } from '../shared/types'
-import { buildPageTree, collectExpandIds, compactId, summarizePages } from '../src/pageTree'
+import { buildPageTree, collectExpandIds, compactId } from '../src/pageTree'
 
 function page(id: string, title: string, parentId: string | null): SearchPage {
   return { id, title, parentId }
@@ -48,16 +48,3 @@ describe('collectExpandIds', () => {
 function flattenTitles(nodes: ReturnType<typeof buildPageTree>): string[] {
   return nodes.flatMap((n) => [n.page.title, ...flattenTitles(n.children)])
 }
-
-describe('summarizePages', () => {
-  it('counts top-level and sub-pages, treating missing parents as top-level', () => {
-    const root = page('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'Root', null)
-    const child = page('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', 'Child', root.id)
-    const orphan = page('cccccccc-cccc-cccc-cccc-cccccccccccc', 'Orphan', 'dddddddd-dddd-dddd-dddd-dddddddddddd')
-    const summary = summarizePages([root, child, orphan])
-    expect(summary.total).toBe(3)
-    expect(summary.topLevelCount).toBe(2)
-    expect(summary.subPageCount).toBe(1)
-    expect(summary.topLevel.map((p) => p.title).sort()).toEqual(['Orphan', 'Root'])
-  })
-})

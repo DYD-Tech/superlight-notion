@@ -90,19 +90,3 @@ export function collectExpandIds(
 
   return ids
 }
-
-export function summarizePages(pages: SearchPage[]): {
-  total: number
-  topLevel: SearchPage[]
-  topLevelCount: number
-  subPageCount: number
-} {
-  const ids = new Set(pages.map((page) => compactId(page.id)))
-  const topLevel = pages.filter((page) => !page.parentId || !ids.has(compactId(page.parentId)))
-  return {
-    total: pages.length,
-    topLevel,
-    topLevelCount: topLevel.length,
-    subPageCount: pages.length - topLevel.length
-  }
-}
